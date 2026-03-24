@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+jobs:
+  package-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      OSGEO_USER: ${{ secrets.OSGEO_USER }}
+      OSGEO_PASSWORD: ${{ secrets.OSGEO_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install release tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Derive release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_TAG}" ]]; then
+            echo "No release tag detected."
+            exit 1
+          fi
+
+          echo "RELEASE_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Publish via qgis-plugin-ci
+        if: ${{ env.OSGEO_USER != '' && env.OSGEO_PASSWORD != '' }}
+        run: >
+          qgis-plugin-ci
+          release "${RELEASE_VERSION}"
+          --release-tag "${RELEASE_TAG}"
+          --github-token "${{ secrets.GITHUB_TOKEN }}"
+          --osgeo-username "${OSGEO_USER}"
+          --osgeo-password "${OSGEO_PASSWORD}"
+          --create-plugin-repo
+
+      - name: Skip publish until secrets are configured
+        if: ${{ env.OSGEO_USER == '' || env.OSGEO_PASSWORD == '' }}
+        run: |
+          echo "OSGEO_USER/OSGEO_PASSWORD are not configured yet."
+          echo "Add repository secrets before enabling plugin publication."

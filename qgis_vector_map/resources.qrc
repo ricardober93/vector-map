@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/plugins/qgis_vector_map">
+    <file alias="icon.svg">icon.svg</file>
+  </qresource>
+</RCC>

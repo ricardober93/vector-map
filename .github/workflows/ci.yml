@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Lint with ruff
+        run: python -m ruff check .
+
+      - name: Format check with ruff
+        run: python -m ruff format --check .
+
+      - name: Run regional baseline regression check
+        run: |
+          python scripts/evaluate_regional_profile.py \
+            data/reference/sample_runs/regional_pass.json \
+            --baseline data/reference/baseline_thresholds.json
+
+      - name: Run profile comparison report
+        run: |
+          python scripts/compare_profile_runs.py \
+            data/reference/sample_runs/profiles_comparison.json >/tmp/profile_comparison.json

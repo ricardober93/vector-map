@@ -1,0 +1,17 @@
+[general]
+name=Vector Map
+description=Local raster-to-vector processing scaffold for QGIS
+version=0.1.0
+qgisMinimumVersion=3.22
+author=Ricardo Bermudez
+email=
+about=Minimal plugin scaffold for local image vectorization workflows.
+category=Raster
+icon=icon.svg
+experimental=True
+deprecated=False
+hasProcessingProvider=yes
+homepage=
+repository=
+tracker=
+changelog=Initial plugin scaffold with a processing provider.

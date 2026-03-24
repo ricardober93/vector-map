@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "run_id": "sample-regional-pass",
+  "profile": "regional-high-precision",
+  "dataset_id": "regional-mvp-v1",
+  "metrics": {
+    "mean_iou": 0.92,
+    "boundary_f1": 0.9,
+    "precision": 0.96,
+    "recall": 0.91,
+    "geometry_valid_ratio": 1.0,
+    "invalid_geometry_count": 0
+  }
+}

@@ -1,0 +1,38 @@
+[
+  {
+    "run_id": "regional-sample-01",
+    "profile": "regional-high-precision",
+    "dataset_id": "regional-mvp-v1",
+    "metrics": {
+      "mean_iou": 0.92,
+      "boundary_f1": 0.9,
+      "precision": 0.96,
+      "recall": 0.91,
+      "geometry_valid_ratio": 1.0
+    }
+  },
+  {
+    "run_id": "edge-sample-01",
+    "profile": "edge-high-precision",
+    "dataset_id": "regional-mvp-v1",
+    "metrics": {
+      "mean_iou": 0.85,
+      "boundary_f1": 0.89,
+      "precision": 0.91,
+      "recall": 0.86,
+      "geometry_valid_ratio": 0.99
+    }
+  },
+  {
+    "run_id": "linear-sample-01",
+    "profile": "linear-high-precision",
+    "dataset_id": "regional-mvp-v1",
+    "metrics": {
+      "mean_iou": 0.8,
+      "boundary_f1": 0.84,
+      "precision": 0.88,
+      "recall": 0.83,
+      "geometry_valid_ratio": 0.98
+    }
+  }
+]

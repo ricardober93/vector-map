@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "baseline_name": "regional-high-precision-mvp",
+  "profile": "regional-high-precision",
+  "dataset_id": "regional-mvp-v1",
+  "metrics": {
+    "mean_iou": {
+      "direction": "gte",
+      "threshold": 0.9,
+      "unit": "ratio"
+    },
+    "boundary_f1": {
+      "direction": "gte",
+      "threshold": 0.88,
+      "unit": "ratio"
+    },
+    "precision": {
+      "direction": "gte",
+      "threshold": 0.95,
+      "unit": "ratio"
+    },
+    "recall": {
+      "direction": "gte",
+      "threshold": 0.9,
+      "unit": "ratio"
+    },
+    "geometry_valid_ratio": {
+      "direction": "gte",
+      "threshold": 1.0,
+      "unit": "ratio"
+    },
+    "invalid_geometry_count": {
+      "direction": "lte",
+      "threshold": 0,
+      "unit": "count"
+    }
+  }
+}

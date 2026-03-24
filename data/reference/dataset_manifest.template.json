@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "dataset_id": "regional-mvp-v1",
+  "dataset_name": "Regional MVP reference dataset",
+  "version": "1.0.0",
+  "profile": "regional-high-precision",
+  "cases": [
+    {
+      "id": "case-001",
+      "image_path": "data/reference/images/case-001.png",
+      "mask_path": "data/reference/masks/case-001.png",
+      "vector_path": "data/reference/vectors/case-001.geojson",
+      "split": "test",
+      "notes": "Simple compact region"
+    }
+  ]
+}
