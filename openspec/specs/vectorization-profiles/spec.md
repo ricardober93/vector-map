@@ -39,4 +39,3 @@ El sistema SHALL habilitar evaluación de precisión por perfil mediante métric
 #### Scenario: Control de regresión de precisión
 - **WHEN** una actualización reduce métricas por debajo del umbral definido
 - **THEN** el sistema marca la regresión y bloquea su aceptación como baseline del MVP
-

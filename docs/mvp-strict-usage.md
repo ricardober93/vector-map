@@ -53,4 +53,3 @@ Usar estos valores como punto de partida:
 - Registrar la configuración efectiva de cada ejecución.
 - Bloquear cambios de parámetros que reduzcan precisión sin una justificación de baseline.
 - Usar este perfil como referencia principal para releases del MVP estricto.
-

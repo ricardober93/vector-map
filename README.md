@@ -3,6 +3,8 @@
 Vector Map is a QGIS plugin for local raster-to-vector processing focused on
 high-precision profiles and reproducible outputs.
 
+Compatibility target: **QGIS 3.44+**.
+
 ## What is included
 
 - QGIS plugin entry point via `classFactory`
@@ -56,3 +58,49 @@ python3 scripts/evaluate_regional_profile.py \
 python3 scripts/compare_profile_runs.py \
   data/reference/sample_runs/profiles_comparison.json
 ```
+
+## Development quality gates
+
+```bash
+python3 -m pre_commit install
+python3 -m pre_commit install --hook-type pre-push
+python3 -m pre_commit run --all-files
+python3 -m pre_commit run --all-files --hook-stage pre-push
+```
+
+Policy:
+- `pre-commit`: higiene + ruff/format.
+- `pre-push`: pyright con `qgis-stubs` para bloquear errores de tipado/imports.
+
+## Processing notes (QGIS 3.44+)
+
+- `INPUT` uses `QgsProcessingParameterRasterLayer` (typed raster input).
+- `OUTPUT` uses `QgsProcessingParameterVectorDestination` (typed vector output).
+- Provider logs are emitted under `Log Messages > Plugins` with tag `Vector Map`.
+- Technical references and benchmark notes are tracked in:
+  - `docs/processing-provider-benchmark.md`
+
+## Build e instalacion del plugin (macOS)
+
+Paso a paso:
+
+1. Dar permisos de ejecucion al script (solo la primera vez):
+
+```bash
+chmod +x scripts/build_and_install_qgis_plugin.sh
+```
+
+2. Ejecutar build + instalacion:
+
+```bash
+./scripts/build_and_install_qgis_plugin.sh
+```
+
+3. Verificar resultado:
+- ZIP generado en `dist/qgis_vector_map-<version>.zip`
+- Plugin instalado en:
+  `~/Library/Application Support/QGIS/QGIS3/profiles/default/python/plugins/qgis_vector_map`
+
+4. Abrir QGIS y recargar el plugin:
+- `Plugins > Manage and Install Plugins`
+- Activar `Vector Map` (o desactivar/activar para recargar cambios)

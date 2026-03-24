@@ -2,20 +2,30 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, cast
 
 from .core.models import PipelineResult, VectorizationRequest
 from .core.pipeline import run_vectorization
 
-try:  # pragma: no cover - requires QGIS runtime
-    from qgis.core import QgsApplication, QgsTask
+_QgsApplication: Any
+_QgsTask: Any
 
-    HAS_QGIS = True
+try:  # pragma: no cover - requires QGIS runtime
+    from qgis.core import QgsApplication as _QgsApplication
+    from qgis.core import QgsTask as _QgsTask
 except Exception:  # pragma: no cover - import-safe fallback
-    HAS_QGIS = False
-    QgsApplication = None  # type: ignore[assignment]
-    QgsTask = object  # type: ignore[assignment]
+    _QgsApplication = None
+
+    class _FallbackQgsTask:
+        CanCancel = 0
+
+    _QgsTask = _FallbackQgsTask
+
+HAS_QGIS = _QgsApplication is not None
+QgsApplication = cast(Any, _QgsApplication)
+QgsTaskBase = cast(type[Any], _QgsTask)
 
 
 @dataclass
@@ -29,11 +39,13 @@ class BackgroundCallbacks:
 
 if HAS_QGIS:
 
-    class VectorizationTask(QgsTask):  # pragma: no cover - requires QGIS runtime
+    class VectorizationTask(QgsTaskBase):  # pragma: no cover - requires QGIS runtime
         """Run vectorization in QGIS background task manager."""
 
-        def __init__(self, request: VectorizationRequest, callbacks: BackgroundCallbacks | None = None) -> None:
-            super().__init__(f"Vectorize: {request.profile_id}", QgsTask.CanCancel)
+        def __init__(
+            self, request: VectorizationRequest, callbacks: BackgroundCallbacks | None = None
+        ) -> None:
+            super().__init__(f"Vectorize: {request.profile_id}", _QgsTask.CanCancel)
             self._request = request
             self._callbacks = callbacks or BackgroundCallbacks()
             self.result: PipelineResult | None = None
@@ -88,6 +100,6 @@ def run_vectorization_async(
         )
 
     task = VectorizationTask(request=request, callbacks=callbacks)
-    manager = QgsApplication.taskManager()
+    manager = cast(Any, QgsApplication).taskManager()
     manager.addTask(task)
     return task

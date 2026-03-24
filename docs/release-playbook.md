@@ -53,4 +53,3 @@ La release solo avanza si:
 - Qué versión se aprobó.
 - Qué limitaciones siguen abiertas.
 - Qué queda para MVP+.
-

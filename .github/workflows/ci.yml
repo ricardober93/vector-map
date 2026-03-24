@@ -10,7 +10,7 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -22,16 +22,23 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Cache pre-commit environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: ${{ runner.os }}-precommit-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-precommit-
+
       - name: Install dev dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
-      - name: Lint with ruff
-        run: python -m ruff check .
-
-      - name: Format check with ruff
-        run: python -m ruff format --check .
+      - name: Run pre-commit quality gates
+        run: |
+          pre-commit run --all-files --show-diff-on-failure
+          pre-commit run --all-files --hook-stage pre-push --show-diff-on-failure
 
       - name: Run regional baseline regression check
         run: |

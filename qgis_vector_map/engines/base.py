@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Iterable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..core.errors import ConfigurationError
 from ..core.models import PipelineContext
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ..processing_profiles import ResolvedProfile
+    pass
 
 
 class VectorizationEngine(ABC):
@@ -60,7 +60,7 @@ class EngineRegistry:
             if engine.supports(profile):
                 return engine
         raise ConfigurationError(
-            f"No vectorization engine supports profile '{getattr(profile, 'profile_id', profile)!r}'."
+            f"No vectorization engine supports profile {getattr(profile, 'profile_id', profile)!r}."
         )
 
 

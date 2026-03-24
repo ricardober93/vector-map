@@ -4,26 +4,20 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-from ..core.errors import ConfigurationError, GeometryError
+from ..core.errors import ConfigurationError
 from ..core.export import export_vector_layer
 from ..core.geometry import (
     auto_threshold,
     binary_close,
-    binary_dilate,
-    binary_erode,
     binary_open,
     close_ring,
-    connected_components,
     majority_filter,
+    otsu_threshold,
     polygon_area,
-    polygon_centroid,
     polygonize_label_map,
     polyline_length,
-    point_in_polygon,
-    otsu_threshold,
     simplify_path,
     sobel_edge_magnitude,
     threshold_matrix,
@@ -32,6 +26,7 @@ from ..core.geometry import (
 )
 from ..core.models import PipelineContext, VectorFeature, VectorLayer
 from ..core.raster import RasterFrame
+from .base import VectorizationEngine
 
 
 @dataclass(frozen=True)
@@ -45,7 +40,7 @@ class _PreprocessedPayload:
     background_label: int | None = None
 
 
-class ClassicVectorizationEngine:
+class ClassicVectorizationEngine(VectorizationEngine):
     """High-precision local engine with regional, edge, and linear profiles."""
 
     name = "classic-local"
@@ -132,7 +127,11 @@ class ClassicVectorizationEngine:
         if not isinstance(layer, VectorLayer):
             raise ConfigurationError("Postprocess stage did not produce a valid vector layer.")
         output_path = context.request.output_path
-        requested_format = getattr(context.profile, "export_format", None) or context.request.output_format or "auto"
+        requested_format = (
+            getattr(context.profile, "export_format", None)
+            or context.request.output_format
+            or "auto"
+        )
         exported_path = export_vector_layer(layer, output_path, requested_format=requested_format)
         context.store_artifact("output_path", exported_path)
         context.metadata["export"] = {
@@ -144,13 +143,13 @@ class ClassicVectorizationEngine:
     # ------------------------------------------------------------------
     # Regional profile
     # ------------------------------------------------------------------
-    def _preprocess_regional(self, grayscale: tuple[tuple[int, ...], ...], parameters: dict[str, Any]) -> _PreprocessedPayload:
+    def _preprocess_regional(
+        self, grayscale: tuple[tuple[int, ...], ...], parameters: dict[str, Any]
+    ) -> _PreprocessedPayload:
         max_colors = int(parameters.get("max_colors", 8))
         background_policy = str(parameters.get("background_policy", "dominant"))
         smoothing_radius = int(parameters.get("smoothing_radius", 1))
         unique_values = Counter(value for row in grayscale for value in row)
-        width = len(grayscale[0]) if grayscale else 0
-        height = len(grayscale)
 
         if len(unique_values) <= max_colors:
             sorted_labels = [value for value, _ in unique_values.most_common()]
@@ -158,9 +157,12 @@ class ClassicVectorizationEngine:
             label_index = {value: index for index, value in enumerate(sorted_labels)}
             label_map = tuple(tuple(label_index[value] for value in row) for row in grayscale)
         else:
-            bucket_count = max(2, round(max_colors ** 0.5))
+            bucket_count = max(2, round(max_colors**0.5))
             bucket_size = max(1, 256 // bucket_count)
-            labels = tuple(tuple(min(max_colors - 1, value // bucket_size) for value in row) for row in grayscale)
+            labels = tuple(
+                tuple(min(max_colors - 1, value // bucket_size) for value in row)
+                for row in grayscale
+            )
             palette = tuple(sorted(set(value for row in labels for value in row)))
             label_map = labels
 
@@ -168,7 +170,11 @@ class ClassicVectorizationEngine:
             label_map = majority_filter(label_map, radius=smoothing_radius)
 
         label_counter = Counter(value for row in label_map for value in row)
-        background_label = label_counter.most_common(1)[0][0] if background_policy == "dominant" and label_counter else None
+        background_label = (
+            label_counter.most_common(1)[0][0]
+            if background_policy == "dominant" and label_counter
+            else None
+        )
         return _PreprocessedPayload(
             mode="regional",
             grayscale=grayscale,
@@ -201,7 +207,9 @@ class ClassicVectorizationEngine:
         for index, feature in enumerate(raw_features):
             cleaned_rings = []
             for ring in feature["coordinates"]:
-                simplified = simplify_path([tuple(point) for point in ring], tolerance=simplify_tolerance)
+                simplified = simplify_path(
+                    [tuple(point) for point in ring], tolerance=simplify_tolerance
+                )
                 if len(simplified) < 4:
                     continue
                 ring_points = close_ring(simplified)
@@ -217,12 +225,18 @@ class ClassicVectorizationEngine:
                 "ring_count": int(feature["ring_count"]),
                 "profile": "regional-high-precision",
             }
-            features.append(VectorFeature(geometry_type="Polygon", coordinates=cleaned_rings, properties=properties))
+            features.append(
+                VectorFeature(
+                    geometry_type="Polygon", coordinates=cleaned_rings, properties=properties
+                )
+            )
 
         layer = VectorLayer(
             features=features,
             name=context.request.layer_name,
-            crs=str(context.raster.metadata.get("crs_wkt")) if context.raster.metadata.get("crs_wkt") else None,
+            crs=str(context.raster.metadata.get("crs_wkt"))
+            if context.raster.metadata.get("crs_wkt")
+            else None,
             metadata={
                 "profile": "regional-high-precision",
                 "parameters": parameters,
@@ -267,7 +281,9 @@ class ClassicVectorizationEngine:
     # ------------------------------------------------------------------
     # Edge profile
     # ------------------------------------------------------------------
-    def _preprocess_edge(self, grayscale: tuple[tuple[int, ...], ...], parameters: dict[str, Any]) -> _PreprocessedPayload:
+    def _preprocess_edge(
+        self, grayscale: tuple[tuple[int, ...], ...], parameters: dict[str, Any]
+    ) -> _PreprocessedPayload:
         edge_threshold = int(parameters.get("edge_threshold", 0) or 0)
         edge_map = sobel_edge_magnitude(grayscale)
         if edge_threshold <= 0:
@@ -276,18 +292,27 @@ class ClassicVectorizationEngine:
         closing_radius = int(parameters.get("close_radius", 1))
         if closing_radius > 0:
             binary = binary_close(binary, radius=closing_radius)
-        return _PreprocessedPayload(mode="edge", grayscale=grayscale, binary_mask=binary, edge_map=edge_map)
+        return _PreprocessedPayload(
+            mode="edge", grayscale=grayscale, binary_mask=binary, edge_map=edge_map
+        )
 
-    def _vectorize_edge(self, context: PipelineContext, payload: _PreprocessedPayload, parameters: dict[str, Any]) -> VectorLayer:
+    def _vectorize_edge(
+        self, context: PipelineContext, payload: _PreprocessedPayload, parameters: dict[str, Any]
+    ) -> VectorLayer:
         if payload.binary_mask is None:
             raise ConfigurationError("Edge preprocessing did not produce a binary mask.")
         min_line_length = int(parameters.get("min_line_length", 2))
         simplify_tolerance = float(parameters.get("simplify_tolerance", 0.5))
-        paths = trace_skeleton_paths(zhang_suen_thinning(payload.binary_mask), min_length=min_line_length)
+        paths = trace_skeleton_paths(
+            zhang_suen_thinning(payload.binary_mask), min_length=min_line_length
+        )
         features = [
             VectorFeature(
                 geometry_type="LineString",
-                coordinates=[[float(x), float(y)] for x, y in simplify_path(path, tolerance=simplify_tolerance)],
+                coordinates=[
+                    [float(x), float(y)]
+                    for x, y in simplify_path(path, tolerance=simplify_tolerance)
+                ],
                 properties={
                     "feature_index": index,
                     "profile": "edge-high-precision",
@@ -300,7 +325,9 @@ class ClassicVectorizationEngine:
         return VectorLayer(
             features=features,
             name=context.request.layer_name,
-            crs=str(context.raster.metadata.get("crs_wkt")) if context.raster.metadata.get("crs_wkt") else None,
+            crs=str(context.raster.metadata.get("crs_wkt"))
+            if context.raster.metadata.get("crs_wkt")
+            else None,
             metadata={"profile": "edge-high-precision", "parameters": parameters},
         )
 
@@ -332,32 +359,47 @@ class ClassicVectorizationEngine:
     # ------------------------------------------------------------------
     # Linear profile
     # ------------------------------------------------------------------
-    def _preprocess_linear(self, grayscale: tuple[tuple[int, ...], ...], parameters: dict[str, Any]) -> _PreprocessedPayload:
+    def _preprocess_linear(
+        self, grayscale: tuple[tuple[int, ...], ...], parameters: dict[str, Any]
+    ) -> _PreprocessedPayload:
         threshold = parameters.get("foreground_threshold")
         if threshold is None:
             threshold = otsu_threshold(grayscale) or auto_threshold(grayscale)
         polarity = str(parameters.get("foreground_polarity", "dark"))
-        binary = threshold_matrix(grayscale, int(threshold), polarity="low" if polarity == "dark" else "high")
+        binary = threshold_matrix(
+            grayscale, int(threshold), polarity="low" if polarity == "dark" else "high"
+        )
         open_radius = int(parameters.get("open_radius", 1))
         close_radius = int(parameters.get("close_radius", 1))
         if open_radius > 0:
             binary = binary_open(binary, radius=open_radius)
         if close_radius > 0:
             binary = binary_close(binary, radius=close_radius)
-        skeleton = zhang_suen_thinning(binary) if bool(parameters.get("skeletonize", True)) else binary
-        return _PreprocessedPayload(mode="linear", grayscale=grayscale, binary_mask=binary, edge_map=skeleton)
+        skeleton = (
+            zhang_suen_thinning(binary) if bool(parameters.get("skeletonize", True)) else binary
+        )
+        return _PreprocessedPayload(
+            mode="linear", grayscale=grayscale, binary_mask=binary, edge_map=skeleton
+        )
 
-    def _vectorize_linear(self, context: PipelineContext, payload: _PreprocessedPayload, parameters: dict[str, Any]) -> VectorLayer:
+    def _vectorize_linear(
+        self, context: PipelineContext, payload: _PreprocessedPayload, parameters: dict[str, Any]
+    ) -> VectorLayer:
         skeleton = payload.edge_map or payload.binary_mask
         if skeleton is None:
-            raise ConfigurationError("Linear preprocessing did not produce a skeleton or binary mask.")
+            raise ConfigurationError(
+                "Linear preprocessing did not produce a skeleton or binary mask."
+            )
         min_line_length = int(parameters.get("min_line_length", 2))
         simplify_tolerance = float(parameters.get("simplify_tolerance", 0.5))
         paths = trace_skeleton_paths(skeleton, min_length=min_line_length)
         features = [
             VectorFeature(
                 geometry_type="LineString",
-                coordinates=[[float(x), float(y)] for x, y in simplify_path(path, tolerance=simplify_tolerance)],
+                coordinates=[
+                    [float(x), float(y)]
+                    for x, y in simplify_path(path, tolerance=simplify_tolerance)
+                ],
                 properties={
                     "feature_index": index,
                     "profile": "linear-high-precision",
@@ -370,6 +412,8 @@ class ClassicVectorizationEngine:
         return VectorLayer(
             features=features,
             name=context.request.layer_name,
-            crs=str(context.raster.metadata.get("crs_wkt")) if context.raster.metadata.get("crs_wkt") else None,
+            crs=str(context.raster.metadata.get("crs_wkt"))
+            if context.raster.metadata.get("crs_wkt")
+            else None,
             metadata={"profile": "linear-high-precision", "parameters": parameters},
         )

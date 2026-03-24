@@ -42,4 +42,3 @@ El sistema SHALL exponer la capacidad de vectorización como algoritmo(s) en Pro
 #### Scenario: Ejecución por lotes
 - **WHEN** el usuario ejecuta un batch con múltiples imágenes
 - **THEN** el sistema procesa cada entrada bajo el mismo contrato de parámetros y genera salidas separadas
-

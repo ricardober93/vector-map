@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
+from .provider import VectorMapProcessingProvider
+
+_QgsApplication: Any
+
 try:  # pragma: no cover - exercised inside QGIS
-    from qgis.core import QgsApplication
+    from qgis.core import QgsApplication as _QgsApplication
 except Exception:  # pragma: no cover - import-safe fallback for local tests
-    class QgsApplication:  # type: ignore[override]
+
+    class _FallbackQgsApplication:
         @staticmethod
         def processingRegistry():
             return None
 
-from .provider import VectorMapProcessingProvider
+    _QgsApplication = _FallbackQgsApplication
+
+QgsApplication = cast(Any, _QgsApplication)
 
 
 class VectorMapPlugin:

@@ -5,6 +5,14 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+include = ["qgis_vector_map", "scripts"]
+exclude = ["dist", "out", "openspec"]
+reportMissingImports = "error"
+reportMissingModuleSource = "none"
+
 [tool.qgis-plugin-ci]
 plugin_path = "qgis_vector_map"
 project_slug = "vector-map"

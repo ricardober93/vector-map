@@ -12,3 +12,5 @@ Documentos:
 - `docs/objective-and-commitment.md`
 - `docs/strong-rules.md`
 - `docs/skills-playbook.md`
+- `docs/processing-provider-benchmark.md`
+- `docs/development-quality-gates.md`

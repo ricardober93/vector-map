@@ -61,4 +61,3 @@ Cada corrida de baseline debe registrar:
 
 La baseline no se ajusta para justificar una regresión puntual.
 Si cambian los umbrales, la decisión debe quedar registrada como nueva baseline aprobada.
-

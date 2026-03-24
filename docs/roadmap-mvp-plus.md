@@ -78,4 +78,3 @@ Requisitos mínimos para habilitarla:
 4. Implementar `linear-high-precision`.
 5. Extender baseline comparativa.
 6. Evaluar incorporación de IA como motor opcional.
-

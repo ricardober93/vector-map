@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from .errors import ConfigurationError, DependencyError
 
@@ -46,7 +47,7 @@ class RasterFrame:
         *,
         source_name: str | None = None,
         metadata: Mapping[str, Any] | None = None,
-    ) -> "RasterFrame":
+    ) -> RasterFrame:
         rows: list[tuple[Pixel, ...]] = []
         expected_width: int | None = None
         inferred_bands: int | None = None
@@ -77,7 +78,7 @@ class RasterFrame:
         )
 
     @classmethod
-    def load(cls, source: Any) -> "RasterFrame":
+    def load(cls, source: Any) -> RasterFrame:
         if isinstance(source, RasterFrame):
             return source
         if isinstance(source, (str, Path)):
@@ -85,13 +86,17 @@ class RasterFrame:
         if _is_sequence_like(source):
             return cls.from_matrix(source)
         if isinstance(source, Mapping) and "pixels" in source:
-            return cls.from_matrix(source["pixels"], source_name=str(source.get("source_name") or source.get("name") or ""))
+            return cls.from_matrix(
+                source["pixels"],
+                source_name=str(source.get("source_name") or source.get("name") or ""),
+            )
         raise ConfigurationError(
-            "Unsupported raster source. Provide a RasterFrame, a matrix of pixels, or a path to a raster file."
+            "Unsupported raster source. Provide a RasterFrame, "
+            "a matrix of pixels, or a path to a raster file."
         )
 
     @classmethod
-    def _load_from_path(cls, path: Path) -> "RasterFrame":
+    def _load_from_path(cls, path: Path) -> RasterFrame:
         if not path.exists():
             raise ConfigurationError(f"Raster input does not exist: {path}")
 
@@ -104,7 +109,13 @@ class RasterFrame:
             with Image.open(path) as image:  # type: ignore[union-attr]
                 image = image.convert("RGB")
                 width, height = image.size
-                pixels = tuple(tuple(tuple(int(channel) for channel in image.getpixel((x, y))) for x in range(width)) for y in range(height))
+                pixels = tuple(
+                    tuple(
+                        tuple(int(channel) for channel in image.getpixel((x, y)))
+                        for x in range(width)
+                    )
+                    for y in range(height)
+                )
                 return cls(
                     pixels=pixels,
                     width=width,
@@ -129,12 +140,16 @@ class RasterFrame:
             if getattr(array, "ndim", 0) == 2:
                 pixels = tuple(tuple(int(value) for value in row) for row in array.tolist())
                 bands = 1
+                height = len(pixels)
+                width = len(pixels[0]) if pixels else 0
             else:
                 bands = int(array.shape[0])
                 height = int(array.shape[1])
                 width = int(array.shape[2])
                 pixels = tuple(
-                    tuple(tuple(int(array[band, y, x]) for band in range(bands)) for x in range(width))
+                    tuple(
+                        tuple(int(array[band, y, x]) for band in range(bands)) for x in range(width)
+                    )
                     for y in range(height)
                 )
             metadata: dict[str, Any] = {"source_path": str(path)}
@@ -185,8 +200,10 @@ class RasterFrame:
             rgb_row: list[tuple[int, int, int]] = []
             for pixel in row:
                 if isinstance(pixel, tuple):
-                    channels = tuple(int(channel) for channel in (pixel[:3] + (0, 0, 0))[:3])
-                    rgb_row.append(channels)
+                    channel_values = [int(channel) for channel in pixel[:3]]
+                    while len(channel_values) < 3:
+                        channel_values.append(0)
+                    rgb_row.append((channel_values[0], channel_values[1], channel_values[2]))
                 else:
                     value = max(0, min(255, int(pixel)))
                     rgb_row.append((value, value, value))
