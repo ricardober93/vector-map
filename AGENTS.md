@@ -34,3 +34,4 @@ Guía rápida para cualquier agente o colaborador que trabaje en este repositori
 - Priorizar precisión y reproducibilidad.
 - No romper contratos de perfiles (`regional`, `edge`, `linear`).
 - Si cambias comportamiento esperado, actualizar `docs/` y OpenSpec specs.
+- Toda versión publicada debe cumplir SemVer (`MAJOR.MINOR.PATCH`) y mantenerse sincronizada entre `qgis_vector_map/metadata.txt` y `qgis_vector_map/__init__.py`.

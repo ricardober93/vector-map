@@ -19,6 +19,7 @@ La release solo avanza si:
 - No hay geometrías inválidas finales.
 - No hay regresiones respecto de la versión aprobada previa.
 - No quedaron tareas abiertas que afecten precisión, exportación o trazabilidad.
+- La versión cumple SemVer (`MAJOR.MINOR.PATCH`) y está sincronizada entre `qgis_vector_map/metadata.txt` y `qgis_vector_map/__init__.py`.
 
 ## Secuencia de release
 
@@ -38,6 +39,7 @@ La release solo avanza si:
 - Postproceso topológico activo.
 - Exportación GIS compatible.
 - Trazabilidad de ejecución guardada.
+- Versionado validado con `python3 scripts/check_semver_versions.py`.
 
 ## Manejo de fallas
 
