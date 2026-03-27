@@ -12,6 +12,9 @@ from .errors import ConfigurationError, DependencyError
 
 Pixel = Any
 MAX_PILLOW_IMAGE_PIXELS = 1_000_000_000
+DEFAULT_MAX_PIXELS = 200_000_000
+DEFAULT_MAX_ESTIMATED_BYTES = 8 * 1024 * 1024 * 1024
+DEFAULT_CHUNK_SIZE = 2048
 
 
 def _is_sequence_like(value: Any) -> bool:
@@ -29,6 +32,40 @@ def _normalize_pixel(pixel: Any) -> Pixel:
             raise ConfigurationError("Pixel tuples cannot be empty.")
         return normalized
     raise ConfigurationError(f"Unsupported pixel value: {pixel!r}")
+
+
+def _coerce_positive_int(value: Any, *, field_name: str, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError(
+            f"Invalid raster loading option '{field_name}': {value!r}."
+        ) from exc
+    if parsed <= 0:
+        raise ConfigurationError(
+            f"Invalid raster loading option '{field_name}': {parsed}. Expected > 0."
+        )
+    return parsed
+
+
+def _format_bytes(value: int) -> str:
+    gib = value / (1024**3)
+    return f"{value:,} bytes (~{gib:.2f} GiB)"
+
+
+def _pixel_to_grayscale(pixel: Pixel) -> int:
+    if isinstance(pixel, tuple):
+        channels = tuple(int(channel) for channel in pixel[:3])
+        if len(channels) == 1:
+            gray = int(channels[0])
+        else:
+            r, g, b = (channels + (0, 0, 0))[:3]
+            gray = int(round(0.299 * r + 0.587 * g + 0.114 * b))
+    else:
+        gray = int(pixel)
+    return max(0, min(255, gray))
 
 
 @contextmanager
@@ -53,6 +90,42 @@ class RasterFrame:
     bands: int
     source_name: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    @dataclass(frozen=True)
+    class LoadOptions:
+        """Configurable limits for raster loading in local runtimes."""
+
+        max_pixels: int = DEFAULT_MAX_PIXELS
+        max_estimated_bytes: int = DEFAULT_MAX_ESTIMATED_BYTES
+        profile_mode: str | None = None
+        chunk_size: int = DEFAULT_CHUNK_SIZE
+
+        @classmethod
+        def from_parameters(
+            cls,
+            parameters: Mapping[str, Any] | None = None,
+            *,
+            profile_mode: str | None = None,
+        ) -> RasterFrame.LoadOptions:
+            values = dict(parameters or {})
+            return cls(
+                max_pixels=_coerce_positive_int(
+                    values.get("max_pixels"),
+                    field_name="max_pixels",
+                    default=DEFAULT_MAX_PIXELS,
+                ),
+                max_estimated_bytes=_coerce_positive_int(
+                    values.get("max_estimated_bytes"),
+                    field_name="max_estimated_bytes",
+                    default=DEFAULT_MAX_ESTIMATED_BYTES,
+                ),
+                profile_mode=profile_mode,
+                chunk_size=_coerce_positive_int(
+                    values.get("chunk_size"),
+                    field_name="chunk_size",
+                    default=DEFAULT_CHUNK_SIZE,
+                ),
+            )
 
     @classmethod
     def from_matrix(
@@ -92,11 +165,17 @@ class RasterFrame:
         )
 
     @classmethod
-    def load(cls, source: Any) -> RasterFrame:
+    def load(
+        cls,
+        source: Any,
+        *,
+        options: RasterFrame.LoadOptions | None = None,
+    ) -> RasterFrame:
+        load_options = options or cls.LoadOptions()
         if isinstance(source, RasterFrame):
             return source
         if isinstance(source, (str, Path)):
-            return cls._load_from_path(Path(source))
+            return cls._load_from_path(Path(source), options=load_options)
         if _is_sequence_like(source):
             return cls.from_matrix(source)
         if isinstance(source, Mapping) and "pixels" in source:
@@ -110,13 +189,21 @@ class RasterFrame:
         )
 
     @classmethod
-    def _load_from_path(cls, path: Path) -> RasterFrame:
+    def _load_from_path(
+        cls, path: Path, *, options: RasterFrame.LoadOptions
+    ) -> RasterFrame:
         if not path.exists():
             raise ConfigurationError(f"Raster input does not exist: {path}")
 
         try:
-            return cls._load_with_gdal(path)
+            return cls._load_with_gdal(path, options=options)
         except Exception as gdal_error:
+            if cls._is_preflight_error(gdal_error):
+                raise gdal_error
+            if cls._is_memory_error(gdal_error):
+                raise DependencyError(
+                    cls._build_memory_error_message(path=path, gdal_error=gdal_error)
+                ) from gdal_error
             try:
                 return cls._load_with_pillow(path)
             except Exception as pillow_error:
@@ -166,7 +253,9 @@ class RasterFrame:
         )
 
     @classmethod
-    def _load_with_gdal(cls, path: Path) -> RasterFrame:
+    def _load_with_gdal(
+        cls, path: Path, *, options: RasterFrame.LoadOptions
+    ) -> RasterFrame:
         gdal_error: Exception | None = None
         try:
             from osgeo import gdal  # type: ignore
@@ -176,6 +265,16 @@ class RasterFrame:
             dataset = gdal.Open(str(path))  # type: ignore[union-attr]
             if dataset is None:
                 raise ConfigurationError(f"GDAL could not open raster file: {path}")
+            preflight = cls._preflight_gdal_dataset(dataset, gdal, path=path, options=options)
+            if options.profile_mode == "regional":
+                return cls._load_regional_with_gdal_chunks(
+                    dataset=dataset,
+                    path=path,
+                    chunk_size=options.chunk_size,
+                    width=preflight["width"],
+                    height=preflight["height"],
+                    bands=preflight["bands"],
+                )
             array = dataset.ReadAsArray()
             if array is None:
                 raise ConfigurationError(f"GDAL returned no data for raster file: {path}")
@@ -212,6 +311,154 @@ class RasterFrame:
 
         raise DependencyError(f"GDAL is not available for raster loading: {gdal_error!r}.")
 
+    @classmethod
+    def _is_memory_error(cls, exc: Exception) -> bool:
+        current: Exception | None = exc
+        seen: set[int] = set()
+        while current is not None:
+            if isinstance(current, MemoryError):
+                return True
+            marker = id(current)
+            if marker in seen:
+                break
+            seen.add(marker)
+            next_exc = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+            if next_exc is current:
+                break
+            current = next_exc if isinstance(next_exc, Exception) else None
+        return False
+
+    @classmethod
+    def _is_preflight_error(cls, exc: Exception) -> bool:
+        return isinstance(exc, ConfigurationError) and str(exc).startswith(
+            "Raster preflight aborted due to estimated memory pressure."
+        )
+
+    @classmethod
+    def _build_memory_error_message(cls, *, path: Path, gdal_error: Exception) -> str:
+        return (
+            "Raster loading failed due to memory pressure while reading with GDAL. "
+            f"Source: {path}. Error: {gdal_error!r}. "
+            "Pillow fallback was skipped to avoid repeating a high-memory full-image load. "
+            "Try clipping the raster to an AOI, downsampling, or processing tiled chunks."
+        )
+
+    @classmethod
+    def _preflight_gdal_dataset(
+        cls,
+        dataset: Any,
+        gdal_module: Any,
+        *,
+        path: Path,
+        options: RasterFrame.LoadOptions,
+    ) -> Mapping[str, int]:
+        width = int(getattr(dataset, "RasterXSize", 0) or 0)
+        height = int(getattr(dataset, "RasterYSize", 0) or 0)
+        bands = max(1, int(getattr(dataset, "RasterCount", 1) or 1))
+        if width <= 0 or height <= 0:
+            raise ConfigurationError(
+                f"GDAL returned invalid raster dimensions for '{path}': {width}x{height}."
+            )
+
+        bytes_per_sample = 8
+        try:
+            first_band = dataset.GetRasterBand(1)
+            data_type = getattr(first_band, "DataType", None)
+            bits = int(gdal_module.GetDataTypeSize(data_type))
+            if bits > 0:
+                bytes_per_sample = max(1, bits // 8)
+        except Exception:
+            bytes_per_sample = 8
+
+        pixels = width * height
+        estimated_bytes = pixels * bands * bytes_per_sample
+        if pixels > options.max_pixels or estimated_bytes > options.max_estimated_bytes:
+            raise ConfigurationError(
+                "Raster preflight aborted due to estimated memory pressure. "
+                f"Size={width}x{height}, bands={bands}, pixels={pixels:,}, "
+                f"estimated={_format_bytes(estimated_bytes)}. "
+                f"Thresholds: max_pixels={options.max_pixels:,}, "
+                f"max_estimated_bytes={_format_bytes(options.max_estimated_bytes)}. "
+                "Recommended actions: clip AOI, downsample, or process in smaller tiles."
+            )
+        return {
+            "width": width,
+            "height": height,
+            "bands": bands,
+            "estimated_bytes": estimated_bytes,
+        }
+
+    @classmethod
+    def _load_regional_with_gdal_chunks(
+        cls,
+        *,
+        dataset: Any,
+        path: Path,
+        chunk_size: int,
+        width: int,
+        height: int,
+        bands: int,
+    ) -> RasterFrame:
+        rows: list[tuple[int, ...]] = []
+        for y_off in range(0, height, chunk_size):
+            y_size = min(chunk_size, height - y_off)
+            window = dataset.ReadAsArray(0, y_off, width, y_size)
+            if window is None:
+                raise ConfigurationError(
+                    f"GDAL returned no data for raster window y={y_off}:{y_off + y_size}."
+                )
+            ndim = int(getattr(window, "ndim", 0))
+            if ndim == 2:
+                chunk_rows = window.tolist()
+                for row in chunk_rows:
+                    rows.append(tuple(max(0, min(255, int(value))) for value in row))
+                continue
+            if ndim != 3:
+                raise ConfigurationError(
+                    f"Unsupported GDAL array shape for regional chunk load: ndim={ndim}."
+                )
+
+            chunk = window.tolist()
+            chunk_band_count = len(chunk)
+            if chunk_band_count == 0:
+                raise ConfigurationError(
+                    "GDAL returned an empty band stack for regional chunk load."
+                )
+            chunk_height = len(chunk[0])
+            for y_idx in range(chunk_height):
+                row: list[int] = []
+                for x_idx in range(width):
+                    if chunk_band_count == 1:
+                        gray = int(chunk[0][y_idx][x_idx])
+                    else:
+                        gray = _pixel_to_grayscale(
+                            tuple(int(chunk[band][y_idx][x_idx]) for band in range(chunk_band_count))
+                        )
+                    row.append(max(0, min(255, gray)))
+                rows.append(tuple(row))
+
+        metadata: dict[str, Any] = {
+            "source_path": str(path),
+            "load_strategy": "gdal-regional-chunked",
+            "chunk_size": chunk_size,
+            "source_bands": bands,
+        }
+        projection = dataset.GetProjection()
+        if projection:
+            metadata["crs_wkt"] = projection
+        geotransform = dataset.GetGeoTransform(can_return_null=True)
+        if geotransform:
+            metadata["geotransform"] = tuple(float(value) for value in geotransform)
+
+        return cls(
+            pixels=tuple(rows),
+            width=width,
+            height=height,
+            bands=1,
+            source_name=path.name,
+            metadata=metadata,
+        )
+
     def pixel(self, x: int, y: int) -> Pixel:
         return self.pixels[y][x]
 
@@ -220,16 +467,7 @@ class RasterFrame:
         for row in self.pixels:
             gray_row: list[int] = []
             for pixel in row:
-                if isinstance(pixel, tuple):
-                    channels = pixel[:3]
-                    if len(channels) == 1:
-                        gray = int(channels[0])
-                    else:
-                        r, g, b = (channels + (0, 0, 0))[:3]
-                        gray = int(round(0.299 * r + 0.587 * g + 0.114 * b))
-                else:
-                    gray = int(pixel)
-                gray_row.append(max(0, min(255, gray)))
+                gray_row.append(_pixel_to_grayscale(pixel))
             gray_rows.append(tuple(gray_row))
         return tuple(gray_rows)
 

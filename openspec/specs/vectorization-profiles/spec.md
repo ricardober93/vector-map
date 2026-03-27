@@ -29,6 +29,14 @@ El sistema MUST definir parámetros por defecto específicos por perfil y SHALL 
 - **WHEN** el usuario modifica parámetros de un perfil
 - **THEN** el sistema registra la configuración efectiva usada en la ejecución
 
+#### Scenario: Parámetros internos de control de memoria
+- **WHEN** el usuario define `max_pixels` y `max_estimated_bytes` en parámetros del perfil
+- **THEN** el sistema aplica esos límites de carga raster sin cambiar el contrato externo del algoritmo Processing
+
+#### Scenario: Carga regional por ventanas
+- **WHEN** el perfil `regional-high-precision` se ejecuta con GDAL disponible
+- **THEN** el sistema puede usar `chunk_size` para leer por ventanas y construir el insumo de preproceso de forma incremental
+
 ### Requirement: Evaluación de calidad por perfil
 El sistema SHALL habilitar evaluación de precisión por perfil mediante métricas definidas y dataset de referencia para detectar regresiones.
 

@@ -31,6 +31,9 @@ Usar estos valores como punto de partida:
 - `simplification`: `disabled` por defecto
 - `output_format`: `GeoPackage`
 - `background_execution`: `enabled`
+- `max_pixels`: `200000000`
+- `max_estimated_bytes`: `8589934592` (8 GiB)
+- `chunk_size` (regional): `2048`
 
 ## Cuándo ajustar parámetros
 
@@ -47,6 +50,8 @@ Usar estos valores como punto de partida:
 - No debe usarse sin revisar la validez geométrica del resultado.
 - No es una herramienta de edición manual; la salida debe tratarse como resultado de procesamiento reproducible.
 - Para rásteres muy grandes, QGIS prioriza GDAL al cargar el archivo. El fallback con Pillow admite hasta `1_000_000_000` píxeles, pero la ejecución puede seguir siendo intensiva en memoria porque el pipeline actual carga la imagen completa.
+- Para rásteres que superan umbrales de memoria estimada, la ejecución se aborta temprano con guía de mitigación (recorte AOI, remuestreo o mosaicos).
+- Si GDAL falla por presión de memoria (`MemoryError`), no se ejecuta fallback con Pillow para evitar duplicar el costo de memoria.
 
 ## Reglas de uso
 

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import tempfile
-from dataclasses import replace
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any
 
+from ..engines.base import VectorizationEngine, build_default_registry
+from ..processing_profiles import ResolvedProfile, resolve_profile
 from .errors import ConfigurationError, PipelineError, StageExecutionError
-from .export import export_vector_layer
 from .models import (
     CancelCallback,
     PipelineContext,
@@ -16,13 +17,10 @@ from .models import (
     ProgressCallback,
     StageName,
     StageReport,
-    StageStatus,
-    VectorLayer,
     VectorizationRequest,
+    VectorLayer,
 )
 from .raster import RasterFrame
-from ..engines.base import VectorizationEngine, build_default_registry
-from ..processing_profiles import ResolvedProfile, resolve_profile
 
 
 class PipelineOrchestrator:
@@ -79,8 +77,16 @@ class PipelineOrchestrator:
         cancel_callback: CancelCallback | None = None,
     ) -> PipelineResult:
         profile = resolve_profile(request.profile_id, request.parameters)
-        raster = RasterFrame.load(request.source)
-        working_directory = Path(request.working_directory) if request.working_directory is not None else Path(tempfile.gettempdir()) / "qgis_vector_map"
+        raster_load_options = RasterFrame.LoadOptions.from_parameters(
+            profile.parameters,
+            profile_mode=profile.mode,
+        )
+        raster = RasterFrame.load(request.source, options=raster_load_options)
+        working_directory = (
+            Path(request.working_directory)
+            if request.working_directory is not None
+            else Path(tempfile.gettempdir()) / "qgis_vector_map"
+        )
         working_directory.mkdir(parents=True, exist_ok=True)
 
         context = PipelineContext(
@@ -94,6 +100,11 @@ class PipelineOrchestrator:
                 "profile_id": profile.profile_id,
                 "profile_mode": profile.mode,
                 "engine_name": profile.engine_name,
+                "raster_load_options": {
+                    "max_pixels": raster_load_options.max_pixels,
+                    "max_estimated_bytes": raster_load_options.max_estimated_bytes,
+                    "chunk_size": raster_load_options.chunk_size,
+                },
             },
         )
 

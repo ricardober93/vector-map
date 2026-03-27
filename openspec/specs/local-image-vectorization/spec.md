@@ -53,3 +53,11 @@ El sistema SHALL priorizar GDAL para cargar rásteres locales en disco dentro de
 #### Scenario: Fallback de dependencias con límite explícito
 - **WHEN** GDAL no está disponible o no puede abrir el archivo y el sistema recurre a Pillow
 - **THEN** el sistema aplica un límite operativo explícito de `1_000_000_000` píxeles y devuelve un error accionable si la carga no puede completarse
+
+#### Scenario: Abort temprano por preflight de memoria
+- **WHEN** un ráster excede `max_pixels` o `max_estimated_bytes` durante el preflight de metadatos GDAL
+- **THEN** el sistema aborta antes de `ReadAsArray` y devuelve un mensaje accionable con dimensiones, estimación y recomendaciones de mitigación
+
+#### Scenario: MemoryError en GDAL evita fallback redundante
+- **WHEN** GDAL falla por `MemoryError` al leer el ráster
+- **THEN** el sistema no intenta fallback con Pillow y devuelve un error explícito de presión de memoria con sugerencias operativas

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 from .core.errors import ConfigurationError
 
@@ -66,6 +67,9 @@ PROFILE_REGISTRY: dict[str, ProfileDefinition] = {
             "min_hole_area": 4,
             "simplify_tolerance": 0.0,
             "connectivity": 4,
+            "max_pixels": 200_000_000,
+            "max_estimated_bytes": 8 * 1024 * 1024 * 1024,
+            "chunk_size": 2048,
         },
         export_format="auto",
     ),
@@ -79,6 +83,8 @@ PROFILE_REGISTRY: dict[str, ProfileDefinition] = {
             "close_radius": 1,
             "min_line_length": 2,
             "simplify_tolerance": 0.5,
+            "max_pixels": 200_000_000,
+            "max_estimated_bytes": 8 * 1024 * 1024 * 1024,
         },
         export_format="auto",
     ),
@@ -95,6 +101,8 @@ PROFILE_REGISTRY: dict[str, ProfileDefinition] = {
             "skeletonize": True,
             "min_line_length": 2,
             "simplify_tolerance": 0.5,
+            "max_pixels": 200_000_000,
+            "max_estimated_bytes": 8 * 1024 * 1024 * 1024,
         },
         export_format="auto",
     ),
@@ -109,8 +117,9 @@ def get_profile_definition(profile_id: str) -> ProfileDefinition:
     try:
         return PROFILE_REGISTRY[profile_id]
     except KeyError as exc:
+        profiles = ", ".join(available_profiles())
         raise ConfigurationError(
-            f"Unknown profile '{profile_id}'. Available profiles: {', '.join(available_profiles())}."
+            f"Unknown profile '{profile_id}'. Available profiles: {profiles}."
         ) from exc
 
 
