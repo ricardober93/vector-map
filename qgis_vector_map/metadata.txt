@@ -1,7 +1,7 @@
 [general]
 name=Vector Map
 description=Local raster-to-vector processing plugin for QGIS Processing
-version=0.1.0
+version=0.1.1
 qgisMinimumVersion=3.44
 author=Ricardo Bermudez
 email=

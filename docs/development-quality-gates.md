@@ -10,24 +10,44 @@ Este documento define el rollout de calidad estática para desarrollo local y CI
 
 ## Flujo local
 
-1. Instalar dependencias:
+1. Crear y activar entorno virtual local del proyecto:
 
 ```bash
-python3 -m pip install -r requirements-dev.txt
+python3 -m venv .venv
+source .venv/bin/activate
 ```
 
-2. Instalar hooks:
+Si `python3` no resuelve a Python 3.11 en tu entorno, usa `python3.11 -m venv .venv`.
+
+2. Instalar dependencias:
 
 ```bash
-python3 -m pre_commit install
-python3 -m pre_commit install --hook-type pre-push
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
 ```
 
-3. Validar manualmente antes de push:
+3. Validar toolchain base:
 
 ```bash
-python3 -m pre_commit run --all-files
-python3 -m pre_commit run --all-files --hook-stage pre-push
+python -m pre_commit --version
+python -m pyright --version
+python scripts/evaluate_regional_profile.py \
+  data/reference/sample_runs/regional_pass.json \
+  --baseline data/reference/baseline_thresholds.json
+```
+
+4. Instalar hooks:
+
+```bash
+python -m pre_commit install
+python -m pre_commit install --hook-type pre-push
+```
+
+5. Validar manualmente antes de push:
+
+```bash
+python -m pre_commit run --all-files
+python -m pre_commit run --all-files --hook-stage pre-push
 ```
 
 ## Política de bloqueo
@@ -43,7 +63,7 @@ Fecha de baseline inicial: 2026-03-24.
 Comando:
 
 ```bash
-python3 -m pre_commit run --all-files --hook-stage pre-push
+python -m pre_commit run --all-files --hook-stage pre-push
 ```
 
 Resultado inicial antes de corregir deuda:

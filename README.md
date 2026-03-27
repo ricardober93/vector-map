@@ -48,24 +48,47 @@ IA-based vectorization remains intentionally out of scope for this phase.
 
 Use the docs in `docs/` for strict MVP operation and roadmap to future phases.
 
+## Project bootstrap (.venv)
+
+Use a local virtual environment per project folder:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
+```
+
+If `python3` is not Python 3.11 on your machine, use `python3.11 -m venv .venv` instead.
+
+Quick post-install validation:
+
+```bash
+python -m pre_commit --version
+python -m pyright --version
+python scripts/evaluate_regional_profile.py \
+  data/reference/sample_runs/regional_pass.json \
+  --baseline data/reference/baseline_thresholds.json
+```
+
 ## Quick checks
 
 ```bash
-python3 -m compileall qgis_vector_map scripts
-python3 scripts/evaluate_regional_profile.py \
+python -m compileall qgis_vector_map scripts
+python scripts/evaluate_regional_profile.py \
   data/reference/sample_runs/regional_pass.json \
   --baseline data/reference/baseline_thresholds.json
-python3 scripts/compare_profile_runs.py \
+python scripts/compare_profile_runs.py \
   data/reference/sample_runs/profiles_comparison.json
 ```
 
 ## Development quality gates
 
 ```bash
-python3 -m pre_commit install
-python3 -m pre_commit install --hook-type pre-push
-python3 -m pre_commit run --all-files
-python3 -m pre_commit run --all-files --hook-stage pre-push
+python -m pre_commit install
+python -m pre_commit install --hook-type pre-push
+python -m pre_commit run --all-files
+python -m pre_commit run --all-files --hook-stage pre-push
 ```
 
 Policy:

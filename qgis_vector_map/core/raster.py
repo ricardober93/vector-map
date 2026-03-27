@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 from .errors import ConfigurationError, DependencyError
 
 Pixel = Any
+MAX_PILLOW_IMAGE_PIXELS = 1_000_000_000
 
 
 def _is_sequence_like(value: Any) -> bool:
@@ -27,6 +29,18 @@ def _normalize_pixel(pixel: Any) -> Pixel:
             raise ConfigurationError("Pixel tuples cannot be empty.")
         return normalized
     raise ConfigurationError(f"Unsupported pixel value: {pixel!r}")
+
+
+@contextmanager
+def _temporary_max_image_pixels(image_module: Any):
+    """Temporarily raise Pillow's decompression-bomb threshold for controlled fallback loads."""
+
+    previous_value = getattr(image_module, "MAX_IMAGE_PIXELS", None)
+    image_module.MAX_IMAGE_PIXELS = MAX_PILLOW_IMAGE_PIXELS
+    try:
+        yield
+    finally:
+        image_module.MAX_IMAGE_PIXELS = previous_value
 
 
 @dataclass(frozen=True)
@@ -100,31 +114,59 @@ class RasterFrame:
         if not path.exists():
             raise ConfigurationError(f"Raster input does not exist: {path}")
 
-        pillow_error: Exception | None = None
+        try:
+            return cls._load_with_gdal(path)
+        except Exception as gdal_error:
+            try:
+                return cls._load_with_pillow(path)
+            except Exception as pillow_error:
+                raise DependencyError(
+                    "Raster loading failed. "
+                    f"GDAL path error: {gdal_error!r}. "
+                    f"Pillow fallback error: {pillow_error!r}. "
+                    "In QGIS, local rasters are loaded with GDAL first; "
+                    "the Pillow fallback currently allows up to "
+                    f"{MAX_PILLOW_IMAGE_PIXELS:,} pixels."
+                ) from pillow_error
+
+    @classmethod
+    def _load_with_pillow(cls, path: Path) -> RasterFrame:
         try:
             from PIL import Image  # type: ignore
         except Exception as exc:  # pragma: no cover - optional dependency
-            pillow_error = exc
-        else:
-            with Image.open(path) as image:  # type: ignore[union-attr]
-                image = image.convert("RGB")
-                width, height = image.size
-                pixels = tuple(
-                    tuple(
-                        tuple(int(channel) for channel in image.getpixel((x, y)))
-                        for x in range(width)
-                    )
-                    for y in range(height)
-                )
-                return cls(
-                    pixels=pixels,
-                    width=width,
-                    height=height,
-                    bands=3,
-                    source_name=path.name,
-                    metadata={"source_path": str(path)},
-                )
+            raise DependencyError(
+                "Pillow is not available for raster fallback loading."
+            ) from exc
 
+        try:
+            with _temporary_max_image_pixels(Image):
+                with Image.open(path) as image:  # type: ignore[union-attr]
+                    image = image.convert("RGB")
+                    width, height = image.size
+                    pixels = tuple(
+                        tuple(
+                            tuple(int(channel) for channel in image.getpixel((x, y)))
+                            for x in range(width)
+                        )
+                        for y in range(height)
+                    )
+        except Exception as exc:
+            raise ConfigurationError(
+                "Pillow could not load the raster file. "
+                f"The fallback limit is {MAX_PILLOW_IMAGE_PIXELS:,} pixels."
+            ) from exc
+
+        return cls(
+            pixels=pixels,
+            width=width,
+            height=height,
+            bands=3,
+            source_name=path.name,
+            metadata={"source_path": str(path)},
+        )
+
+    @classmethod
+    def _load_with_gdal(cls, path: Path) -> RasterFrame:
         gdal_error: Exception | None = None
         try:
             from osgeo import gdal  # type: ignore
@@ -168,10 +210,7 @@ class RasterFrame:
                 metadata=metadata,
             )
 
-        raise DependencyError(
-            "Loading raster files requires Pillow or GDAL. "
-            f"Missing Pillow import error: {pillow_error!r}; GDAL import error: {gdal_error!r}."
-        )
+        raise DependencyError(f"GDAL is not available for raster loading: {gdal_error!r}.")
 
     def pixel(self, x: int, y: int) -> Pixel:
         return self.pixels[y][x]

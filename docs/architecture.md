@@ -35,6 +35,13 @@ Raster Input
 - Implementaciones clásicas locales.
 - Contrato de entrada/salida común.
 
+### Política de carga raster
+
+- En runtime de QGIS, los archivos raster en disco se cargan con GDAL como ruta preferida.
+- Pillow queda como fallback para compatibilidad local cuando GDAL no está disponible o no puede abrir el archivo.
+- El fallback con Pillow permite hasta `1_000_000_000` píxeles.
+- Este ajuste evita el bloqueo temprano por `DecompressionBombError`, pero no cambia el hecho de que el pipeline actual materializa el raster completo en memoria.
+
 5. Postproceso topológico
 - Validación/corrección geométrica.
 - Simplificación y limpieza configurable.

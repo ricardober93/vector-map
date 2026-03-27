@@ -42,3 +42,14 @@ El sistema SHALL exponer la capacidad de vectorización como algoritmo(s) en Pro
 #### Scenario: Ejecución por lotes
 - **WHEN** el usuario ejecuta un batch con múltiples imágenes
 - **THEN** el sistema procesa cada entrada bajo el mismo contrato de parámetros y genera salidas separadas
+
+### Requirement: Carga robusta de rásteres locales grandes
+El sistema SHALL priorizar GDAL para cargar rásteres locales en disco dentro de QGIS y MAY usar Pillow como fallback controlado para compatibilidad local.
+
+#### Scenario: Raster geoespacial grande en QGIS
+- **WHEN** el usuario ejecuta la vectorización con un raster local grande compatible con GDAL
+- **THEN** el sistema intenta primero la carga con GDAL y evita fallar prematuramente por el límite de descompresión de Pillow
+
+#### Scenario: Fallback de dependencias con límite explícito
+- **WHEN** GDAL no está disponible o no puede abrir el archivo y el sistema recurre a Pillow
+- **THEN** el sistema aplica un límite operativo explícito de `1_000_000_000` píxeles y devuelve un error accionable si la carga no puede completarse

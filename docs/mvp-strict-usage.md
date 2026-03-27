@@ -46,6 +46,7 @@ Usar estos valores como punto de partida:
 - No cubre todavía flujos de bordes o líneas como perfiles propios.
 - No debe usarse sin revisar la validez geométrica del resultado.
 - No es una herramienta de edición manual; la salida debe tratarse como resultado de procesamiento reproducible.
+- Para rásteres muy grandes, QGIS prioriza GDAL al cargar el archivo. El fallback con Pillow admite hasta `1_000_000_000` píxeles, pero la ejecución puede seguir siendo intensiva en memoria porque el pipeline actual carga la imagen completa.
 
 ## Reglas de uso
 
