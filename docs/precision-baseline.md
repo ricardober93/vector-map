@@ -56,6 +56,17 @@ Cada corrida de baseline debe registrar:
 - Tamaño del dataset.
 - Métricas por caso.
 - Resultado final: `pass` o `fail`.
+- `memory_policy` efectivo (`strict`, `expert-override`, `regional-tiles`).
+- Si aplica, configuración de teselas (`tile_size`, cantidad de teselas).
+
+## Comparabilidad entre modos de memoria
+
+Para preservar reproducibilidad y trazabilidad:
+
+- `strict` se mantiene como referencia primaria de baseline.
+- `regional-tiles` puede aprobarse para escenas grandes, pero debe compararse contra casos de control donde exista corrida `strict` viable.
+- En validaciones `regional-tiles`, revisar explícitamente fragmentación adicional en bordes de tesela.
+- `expert-override` no reemplaza baseline primaria; su uso se considera operativo y debe quedar justificado en el reporte.
 
 ## Regla de gobernanza
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from math import ceil, sqrt
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ MAX_PILLOW_IMAGE_PIXELS = 1_000_000_000
 DEFAULT_MAX_PIXELS = 200_000_000
 DEFAULT_MAX_ESTIMATED_BYTES = 8 * 1024 * 1024 * 1024
 DEFAULT_CHUNK_SIZE = 2048
+DEFAULT_MEMORY_POLICY = "strict"
 
 
 def _is_sequence_like(value: Any) -> bool:
@@ -53,6 +55,20 @@ def _coerce_positive_int(value: Any, *, field_name: str, default: int) -> int:
 def _format_bytes(value: int) -> str:
     gib = value / (1024**3)
     return f"{value:,} bytes (~{gib:.2f} GiB)"
+
+
+def _coerce_memory_policy(value: Any, *, default: str = DEFAULT_MEMORY_POLICY) -> str:
+    if value is None:
+        return default
+    policy = str(value).strip().lower()
+    allowed = {"strict", "expert-override", "regional-tiles"}
+    if policy not in allowed:
+        allowed_values = ", ".join(sorted(allowed))
+        raise ConfigurationError(
+            f"Invalid raster loading option 'memory_policy': {value!r}. "
+            f"Expected one of: {allowed_values}."
+        )
+    return policy
 
 
 def _pixel_to_grayscale(pixel: Pixel) -> int:
@@ -99,6 +115,7 @@ class RasterFrame:
         max_estimated_bytes: int = DEFAULT_MAX_ESTIMATED_BYTES
         profile_mode: str | None = None
         chunk_size: int = DEFAULT_CHUNK_SIZE
+        memory_policy: str = DEFAULT_MEMORY_POLICY
 
         @classmethod
         def from_parameters(
@@ -124,6 +141,10 @@ class RasterFrame:
                     values.get("chunk_size"),
                     field_name="chunk_size",
                     default=DEFAULT_CHUNK_SIZE,
+                ),
+                memory_policy=_coerce_memory_policy(
+                    values.get("memory_policy"),
+                    default=DEFAULT_MEMORY_POLICY,
                 ),
             )
 
@@ -373,13 +394,25 @@ class RasterFrame:
         pixels = width * height
         estimated_bytes = pixels * bands * bytes_per_sample
         if pixels > options.max_pixels or estimated_bytes > options.max_estimated_bytes:
+            reduction_ratio = max(1.0, pixels / max(1, options.max_pixels))
+            reduction_factor = sqrt(reduction_ratio)
+            target_width = max(1, int(round(width / reduction_factor)))
+            target_height = max(1, int(round(height / reduction_factor)))
+            tile_size = max(1, options.chunk_size)
+            tile_cols = ceil(width / tile_size)
+            tile_rows = ceil(height / tile_size)
+            tile_count = tile_cols * tile_rows
             raise ConfigurationError(
                 "Raster preflight aborted due to estimated memory pressure. "
                 f"Size={width}x{height}, bands={bands}, pixels={pixels:,}, "
                 f"estimated={_format_bytes(estimated_bytes)}. "
                 f"Thresholds: max_pixels={options.max_pixels:,}, "
                 f"max_estimated_bytes={_format_bytes(options.max_estimated_bytes)}. "
-                "Recommended actions: clip AOI, downsample, or process in smaller tiles."
+                "Recommended actions: clip AOI, downsample, or process in smaller tiles. "
+                f"Suggested linear reduction factor >= {reduction_factor:.2f}x "
+                f"(target <= ~{target_width}x{target_height}). "
+                f"With tile_size={tile_size}, estimated tile grid is {tile_cols}x{tile_rows} "
+                f"({tile_count} tiles)."
             )
         return {
             "width": width,

@@ -9,7 +9,7 @@ from typing import Any
 
 from ..engines.base import VectorizationEngine, build_default_registry
 from ..processing_profiles import ResolvedProfile, resolve_profile
-from .errors import ConfigurationError, PipelineError, StageExecutionError
+from .errors import ConfigurationError, DependencyError, PipelineError, StageExecutionError
 from .models import (
     CancelCallback,
     PipelineContext,
@@ -17,6 +17,7 @@ from .models import (
     ProgressCallback,
     StageName,
     StageReport,
+    VectorFeature,
     VectorizationRequest,
     VectorLayer,
 )
@@ -69,47 +70,167 @@ class PipelineOrchestrator:
             progress_callback(stage, 1.0, f"Completed {stage.value}")
         return updated_context
 
-    def run(
-        self,
-        request: VectorizationRequest,
-        *,
-        progress_callback: ProgressCallback | None = None,
-        cancel_callback: CancelCallback | None = None,
-    ) -> PipelineResult:
-        profile = resolve_profile(request.profile_id, request.parameters)
-        raster_load_options = RasterFrame.LoadOptions.from_parameters(
-            profile.parameters,
-            profile_mode=profile.mode,
-        )
-        raster = RasterFrame.load(request.source, options=raster_load_options)
+    def _build_working_directory(self, request: VectorizationRequest) -> Path:
         working_directory = (
             Path(request.working_directory)
             if request.working_directory is not None
             else Path(tempfile.gettempdir()) / "qgis_vector_map"
         )
         working_directory.mkdir(parents=True, exist_ok=True)
+        return working_directory
 
+    def _build_base_metadata(
+        self,
+        *,
+        request: VectorizationRequest,
+        profile: ResolvedProfile,
+        raster_load_options: RasterFrame.LoadOptions,
+    ) -> dict[str, Any]:
+        return {
+            "request_metadata": dict(request.metadata),
+            "requested_parameters": dict(request.parameters),
+            "profile_id": profile.profile_id,
+            "profile_mode": profile.mode,
+            "engine_name": profile.engine_name,
+            "memory_policy": raster_load_options.memory_policy,
+            "raster_load_options": {
+                "max_pixels": raster_load_options.max_pixels,
+                "max_estimated_bytes": raster_load_options.max_estimated_bytes,
+                "chunk_size": raster_load_options.chunk_size,
+                "memory_policy": raster_load_options.memory_policy,
+            },
+        }
+
+    def _resolve_memory_policy(
+        self,
+        *,
+        request: VectorizationRequest,
+        raster_load_options: RasterFrame.LoadOptions,
+    ) -> tuple[str, list[str]]:
+        policy = raster_load_options.memory_policy
+        warnings: list[str] = []
+        if policy == "expert-override":
+            has_explicit_override = (
+                "max_pixels" in request.parameters or "max_estimated_bytes" in request.parameters
+            )
+            if not has_explicit_override:
+                raise ConfigurationError(
+                    "memory_policy='expert-override' requires explicit "
+                    "'max_pixels' and/or 'max_estimated_bytes' in request parameters."
+                )
+            warnings.append(
+                "memory_policy='expert-override' enabled: execution may use higher memory "
+                "than strict defaults."
+            )
+        return policy, warnings
+
+    def _offset_coordinates(
+        self, geometry_type: str, coordinates: Any, *, x_off: int, y_off: int
+    ) -> Any:
+        if geometry_type == "Point":
+            x, y = coordinates
+            return [float(x) + x_off, float(y) + y_off]
+        if geometry_type in {"LineString", "MultiPoint"}:
+            return [[float(x) + x_off, float(y) + y_off] for x, y in coordinates]
+        if geometry_type == "Polygon":
+            return [
+                [[float(x) + x_off, float(y) + y_off] for x, y in ring] for ring in coordinates
+            ]
+        if geometry_type == "MultiLineString":
+            return [
+                [[float(x) + x_off, float(y) + y_off] for x, y in line] for line in coordinates
+            ]
+        if geometry_type == "MultiPolygon":
+            return [
+                [
+                    [[float(x) + x_off, float(y) + y_off] for x, y in ring]
+                    for ring in polygon
+                ]
+                for polygon in coordinates
+            ]
+        return coordinates
+
+    def _to_grayscale(self, channels: list[int]) -> int:
+        if len(channels) == 1:
+            value = channels[0]
+            return max(0, min(255, int(value)))
+        rgb = (channels + [0, 0, 0])[:3]
+        gray = int(round(0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]))
+        return max(0, min(255, gray))
+
+    def _load_raster_tile(
+        self,
+        *,
+        dataset: Any,
+        source_name: str,
+        x_off: int,
+        y_off: int,
+        x_size: int,
+        y_size: int,
+        source_metadata: dict[str, Any],
+    ) -> RasterFrame:
+        window = dataset.ReadAsArray(x_off, y_off, x_size, y_size)
+        if window is None:
+            raise ConfigurationError(
+                f"GDAL returned no data for tile x={x_off}:{x_off + x_size}, "
+                f"y={y_off}:{y_off + y_size}."
+            )
+        ndim = int(getattr(window, "ndim", 0))
+        rows: list[list[int]] = []
+        if ndim == 2:
+            rows = [[max(0, min(255, int(value))) for value in row] for row in window.tolist()]
+        elif ndim == 3:
+            values = window.tolist()
+            band_count = len(values)
+            for row_idx in range(y_size):
+                row: list[int] = []
+                for col_idx in range(x_size):
+                    channels = [int(values[band][row_idx][col_idx]) for band in range(band_count)]
+                    row.append(self._to_grayscale(channels))
+                rows.append(row)
+        else:
+            raise ConfigurationError(
+                f"Unsupported GDAL array shape for tile load: ndim={ndim}."
+            )
+        tile_metadata = {
+            **source_metadata,
+            "load_strategy": "gdal-regional-tiles",
+            "tile_origin": [x_off, y_off],
+            "tile_size": [x_size, y_size],
+        }
+        return RasterFrame.from_matrix(
+            rows,
+            source_name=source_name,
+            metadata=tile_metadata,
+        )
+
+    def _run_standard_pipeline(
+        self,
+        *,
+        request: VectorizationRequest,
+        profile: ResolvedProfile,
+        engine: VectorizationEngine,
+        raster_load_options: RasterFrame.LoadOptions,
+        progress_callback: ProgressCallback | None,
+        cancel_callback: CancelCallback | None,
+        warnings: list[str],
+    ) -> PipelineResult:
+        raster = RasterFrame.load(request.source, options=raster_load_options)
         context = PipelineContext(
             request=request,
             profile=profile,
             raster=raster,
-            working_directory=working_directory,
-            metadata={
-                "request_metadata": dict(request.metadata),
-                "requested_parameters": dict(request.parameters),
-                "profile_id": profile.profile_id,
-                "profile_mode": profile.mode,
-                "engine_name": profile.engine_name,
-                "raster_load_options": {
-                    "max_pixels": raster_load_options.max_pixels,
-                    "max_estimated_bytes": raster_load_options.max_estimated_bytes,
-                    "chunk_size": raster_load_options.chunk_size,
-                },
-            },
+            working_directory=self._build_working_directory(request),
+            metadata=self._build_base_metadata(
+                request=request,
+                profile=profile,
+                raster_load_options=raster_load_options,
+            ),
         )
-
-        engine = self.resolve_engine(profile)
+        context.warnings.extend(warnings)
         context.metadata["resolved_engine"] = engine.name
+        if warnings:
+            context.metadata["memory_policy_warnings"] = list(warnings)
 
         if progress_callback is not None:
             progress_callback(StageName.PREPROCESS, 0.0, "Resolved engine and raster input")
@@ -157,6 +278,282 @@ class PipelineOrchestrator:
             engine_name=engine.name,
             metadata=dict(context.metadata),
             warnings=list(context.warnings),
+        )
+
+    def _run_regional_tiled_pipeline(
+        self,
+        *,
+        request: VectorizationRequest,
+        profile: ResolvedProfile,
+        engine: VectorizationEngine,
+        raster_load_options: RasterFrame.LoadOptions,
+        progress_callback: ProgressCallback | None,
+        cancel_callback: CancelCallback | None,
+        warnings: list[str],
+    ) -> PipelineResult:
+        if profile.mode != "regional":
+            raise ConfigurationError(
+                "memory_policy='regional-tiles' is only supported for regional profile mode."
+            )
+        if not isinstance(request.source, (str, Path)):
+            raise ConfigurationError(
+                "memory_policy='regional-tiles' requires a raster path source."
+            )
+        source_path = Path(request.source)
+        if not source_path.exists():
+            raise ConfigurationError(f"Raster input does not exist: {source_path}")
+        try:
+            from osgeo import gdal  # type: ignore
+        except Exception as exc:
+            raise DependencyError(
+                "memory_policy='regional-tiles' requires GDAL (osgeo)."
+            ) from exc
+
+        dataset = gdal.Open(str(source_path))
+        if dataset is None:
+            raise ConfigurationError(f"GDAL could not open raster file: {source_path}")
+
+        width = int(getattr(dataset, "RasterXSize", 0) or 0)
+        height = int(getattr(dataset, "RasterYSize", 0) or 0)
+        bands = max(1, int(getattr(dataset, "RasterCount", 1) or 1))
+        if width <= 0 or height <= 0:
+            raise ConfigurationError(
+                f"GDAL returned invalid raster dimensions for '{source_path}': {width}x{height}."
+            )
+        tile_size = int(profile.parameter("tile_size", profile.parameter("chunk_size", 2048)))
+        if tile_size <= 0:
+            raise ConfigurationError("Invalid tile_size for regional-tiles mode. Expected > 0.")
+
+        projection = dataset.GetProjection()
+        geotransform = dataset.GetGeoTransform(can_return_null=True)
+        source_metadata: dict[str, Any] = {"source_path": str(source_path)}
+        if projection:
+            source_metadata["crs_wkt"] = projection
+        if geotransform:
+            source_metadata["geotransform"] = tuple(float(value) for value in geotransform)
+
+        tile_plan: list[tuple[int, int, int, int]] = []
+        for y_off in range(0, height, tile_size):
+            y_size = min(tile_size, height - y_off)
+            for x_off in range(0, width, tile_size):
+                x_size = min(tile_size, width - x_off)
+                tile_plan.append((x_off, y_off, x_size, y_size))
+
+        context = PipelineContext(
+            request=request,
+            profile=profile,
+            raster=RasterFrame.from_matrix(
+                [[0]],
+                source_name=source_path.name,
+                metadata={**source_metadata, "load_strategy": "gdal-regional-tiles"},
+            ),
+            working_directory=self._build_working_directory(request),
+            metadata=self._build_base_metadata(
+                request=request,
+                profile=profile,
+                raster_load_options=raster_load_options,
+            ),
+        )
+        context.warnings.extend(warnings)
+        context.metadata["resolved_engine"] = engine.name
+        context.metadata["tile_execution"] = {
+            "tile_size": tile_size,
+            "tile_count": len(tile_plan),
+            "source_width": width,
+            "source_height": height,
+            "source_bands": bands,
+        }
+        if warnings:
+            context.metadata["memory_policy_warnings"] = list(warnings)
+
+        def _preprocess_tiled(tile_context: PipelineContext) -> PipelineContext:
+            tile_context.store_artifact("tile_plan", tile_plan)
+            tile_context.metadata["preprocess"] = {
+                "mode": "regional-tiles",
+                "tile_count": len(tile_plan),
+                "tile_size": tile_size,
+            }
+            return tile_context
+
+        def _vectorize_tiled(tile_context: PipelineContext) -> PipelineContext:
+            merged_features: list[VectorFeature] = []
+            tile_stats: list[dict[str, Any]] = []
+            total_tiles = max(1, len(tile_plan))
+            for tile_index, (x_off, y_off, x_size, y_size) in enumerate(tile_plan):
+                self._check_cancelled(cancel_callback, StageName.VECTORIZE)
+                tile_raster = self._load_raster_tile(
+                    dataset=dataset,
+                    source_name=source_path.name,
+                    x_off=x_off,
+                    y_off=y_off,
+                    x_size=x_size,
+                    y_size=y_size,
+                    source_metadata=source_metadata,
+                )
+                tile_request = VectorizationRequest(
+                    source=tile_raster,
+                    profile_id=profile.profile_id,
+                    output_path=request.output_path,
+                    output_format=request.output_format,
+                    layer_name=request.layer_name,
+                    parameters=profile.parameters,
+                    metadata={
+                        **dict(request.metadata),
+                        "tile_index": tile_index,
+                        "tile_origin": [x_off, y_off],
+                    },
+                    working_directory=request.working_directory,
+                )
+                tile_execution_context = PipelineContext(
+                    request=tile_request,
+                    profile=profile,
+                    raster=tile_raster,
+                    working_directory=tile_context.working_directory,
+                )
+                tile_execution_context = engine.preprocess(tile_execution_context)
+                tile_execution_context = engine.vectorize(tile_execution_context)
+                tile_layer = tile_execution_context.artifact("vector_layer")
+                if not isinstance(tile_layer, VectorLayer):
+                    raise ConfigurationError("Tile vectorization did not produce a valid vector layer.")
+                for feature in tile_layer.features:
+                    shifted = self._offset_coordinates(
+                        feature.geometry_type,
+                        feature.coordinates,
+                        x_off=x_off,
+                        y_off=y_off,
+                    )
+                    merged_features.append(
+                        VectorFeature(
+                            geometry_type=feature.geometry_type,
+                            coordinates=shifted,
+                            properties={
+                                **dict(feature.properties),
+                                "feature_index": len(merged_features),
+                                "tile_index": tile_index,
+                                "tile_origin_x": x_off,
+                                "tile_origin_y": y_off,
+                            },
+                        )
+                    )
+                tile_stats.append(
+                    {
+                        "tile_index": tile_index,
+                        "origin": [x_off, y_off],
+                        "size": [x_size, y_size],
+                        "feature_count": tile_layer.feature_count(),
+                    }
+                )
+                if progress_callback is not None:
+                    progress_callback(
+                        StageName.VECTORIZE,
+                        float(tile_index + 1) / float(total_tiles),
+                        f"Processed tile {tile_index + 1}/{total_tiles}",
+                    )
+
+            merged_layer = VectorLayer(
+                features=merged_features,
+                name=request.layer_name,
+                crs=str(source_metadata.get("crs_wkt")) if source_metadata.get("crs_wkt") else None,
+                metadata={
+                    "profile": "regional-high-precision",
+                    "parameters": dict(profile.parameters),
+                    "source": source_path.name,
+                    "load_strategy": "regional-tiles",
+                    "tile_size": tile_size,
+                    "tile_count": len(tile_plan),
+                },
+            )
+            tile_context.store_artifact("vector_layer", merged_layer)
+            tile_context.metadata["vectorize"] = {
+                "feature_count": merged_layer.feature_count(),
+                "tile_count": len(tile_plan),
+                "tile_stats": tile_stats,
+                "geometry_types": sorted(
+                    {feature.geometry_type for feature in merged_layer.features}
+                ),
+            }
+            return tile_context
+
+        context = self._run_stage(
+            context=context,
+            engine=engine,
+            stage=StageName.PREPROCESS,
+            handler=_preprocess_tiled,
+            progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
+        )
+        context = self._run_stage(
+            context=context,
+            engine=engine,
+            stage=StageName.VECTORIZE,
+            handler=_vectorize_tiled,
+            progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
+        )
+        context = self._run_stage(
+            context=context,
+            engine=engine,
+            stage=StageName.POSTPROCESS,
+            handler=engine.postprocess,
+            progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
+        )
+        context = self._run_stage(
+            context=context,
+            engine=engine,
+            stage=StageName.EXPORT,
+            handler=engine.export,
+            progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
+        )
+
+        vector_layer: VectorLayer = context.artifacts["vector_layer"]
+        output_path: Path = context.artifacts["output_path"]
+        return PipelineResult(
+            output_path=output_path,
+            vector_layer=vector_layer,
+            stage_reports=list(context.stage_reports),
+            profile_id=profile.profile_id,
+            engine_name=engine.name,
+            metadata=dict(context.metadata),
+            warnings=list(context.warnings),
+        )
+
+    def run(
+        self,
+        request: VectorizationRequest,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        cancel_callback: CancelCallback | None = None,
+    ) -> PipelineResult:
+        profile = resolve_profile(request.profile_id, request.parameters)
+        raster_load_options = RasterFrame.LoadOptions.from_parameters(
+            profile.parameters,
+            profile_mode=profile.mode,
+        )
+        engine = self.resolve_engine(profile)
+        memory_policy, warnings = self._resolve_memory_policy(
+            request=request,
+            raster_load_options=raster_load_options,
+        )
+        if memory_policy == "regional-tiles":
+            return self._run_regional_tiled_pipeline(
+                request=request,
+                profile=profile,
+                engine=engine,
+                raster_load_options=raster_load_options,
+                progress_callback=progress_callback,
+                cancel_callback=cancel_callback,
+                warnings=warnings,
+            )
+        return self._run_standard_pipeline(
+            request=request,
+            profile=profile,
+            engine=engine,
+            raster_load_options=raster_load_options,
+            progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
+            warnings=warnings,
         )
 
 

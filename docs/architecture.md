@@ -43,11 +43,16 @@ Raster Input
 - Umbrales por defecto del preflight:
   - `max_pixels = 200_000_000`
   - `max_estimated_bytes = 8 GiB`
-- Si el preflight supera umbrales, el proceso aborta temprano con mensaje accionable (recorte AOI, remuestreo, procesamiento por mosaicos).
+- `memory_policy` controla el comportamiento operativo:
+  - `strict` (default): aplica guardrails y abort temprano.
+  - `expert-override`: requiere overrides explícitos de límites y registra advertencia operativa.
+  - `regional-tiles`: para `regional-high-precision`, procesa por teselas y consolida salida en una capa única.
+- Si el preflight supera umbrales en modo `strict`, el proceso aborta temprano con mensaje accionable (recorte AOI, remuestreo, procesamiento por mosaicos), incluyendo recomendaciones cuantitativas (factor de reducción y tamaño objetivo).
 - Si GDAL falla con `MemoryError`, el sistema no intenta Pillow para evitar una segunda carga completa en memoria.
 - El fallback con Pillow permite hasta `1_000_000_000` píxeles.
 - Este ajuste evita el bloqueo temprano por `DecompressionBombError`, pero no cambia el hecho de que el pipeline actual materializa el raster completo en memoria.
 - En perfil `regional-high-precision`, la carga GDAL usa lectura por ventanas (`chunk_size` por defecto `2048`) para construir escala de grises de forma incremental.
+- En modo `regional-tiles`, cada tesela se vectoriza con el mismo motor y luego se ejecuta limpieza topológica posterior sobre la capa consolidada.
 
 5. Postproceso topológico
 - Validación/corrección geométrica.

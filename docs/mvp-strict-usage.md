@@ -34,6 +34,8 @@ Usar estos valores como punto de partida:
 - `max_pixels`: `200000000`
 - `max_estimated_bytes`: `8589934592` (8 GiB)
 - `chunk_size` (regional): `2048`
+- `tile_size` (regional, para `regional-tiles`): `2048`
+- `memory_policy`: `strict` (default)
 
 ## Cuándo ajustar parámetros
 
@@ -41,6 +43,9 @@ Usar estos valores como punto de partida:
 - Si aparecen regiones fragmentadas, activar o reforzar `hole_filling` y limpieza topológica.
 - Si la imagen tiene mucho detalle fino, reducir el nivel de suavizado con cuidado.
 - Si hay pérdida de precisión visible, no aplicar simplificación automática.
+- Si el preflight falla por tamaño, usar primero `strict` con recorte AOI o remuestreo.
+- Si la operación requiere cubrir toda la escena grande, usar `memory_policy=regional-tiles` y ajustar `tile_size`.
+- Usar `memory_policy=expert-override` solo con límites explícitos (`max_pixels` y/o `max_estimated_bytes`) y validación previa de memoria disponible.
 
 ## Límites del MVP estricto
 
@@ -51,6 +56,8 @@ Usar estos valores como punto de partida:
 - No es una herramienta de edición manual; la salida debe tratarse como resultado de procesamiento reproducible.
 - Para rásteres muy grandes, QGIS prioriza GDAL al cargar el archivo. El fallback con Pillow admite hasta `1_000_000_000` píxeles, pero la ejecución puede seguir siendo intensiva en memoria porque el pipeline actual carga la imagen completa.
 - Para rásteres que superan umbrales de memoria estimada, la ejecución se aborta temprano con guía de mitigación (recorte AOI, remuestreo o mosaicos).
+- El mensaje de abort en preflight incluye recomendaciones cuantitativas (factor mínimo de reducción y tamaño objetivo aproximado) para acelerar la toma de decisión operativa.
+- `regional-tiles` consolida salida en una sola capa y ejecuta limpieza topológica posterior al merge.
 - Si GDAL falla por presión de memoria (`MemoryError`), no se ejecuta fallback con Pillow para evitar duplicar el costo de memoria.
 
 ## Reglas de uso

@@ -251,6 +251,25 @@ class RasterFrameLoadTests(unittest.TestCase):
 
         self.assertIn("Raster preflight aborted", str(caught.exception))
         self.assertIn("Recommended actions", str(caught.exception))
+        self.assertIn("Suggested linear reduction factor", str(caught.exception))
+        self.assertIn("estimated tile grid", str(caught.exception))
+
+    def test_load_options_defaults_to_strict_memory_policy(self) -> None:
+        options = RasterFrame.LoadOptions.from_parameters({"chunk_size": 1024}, profile_mode="regional")
+        self.assertEqual(options.memory_policy, "strict")
+
+    def test_load_options_accepts_known_memory_policies(self) -> None:
+        for policy in ("strict", "expert-override", "regional-tiles"):
+            options = RasterFrame.LoadOptions.from_parameters(
+                {"memory_policy": policy},
+                profile_mode="regional",
+            )
+            self.assertEqual(options.memory_policy, policy)
+
+    def test_load_options_rejects_unknown_memory_policy(self) -> None:
+        with self.assertRaises(ConfigurationError) as caught:
+            RasterFrame.LoadOptions.from_parameters({"memory_policy": "aggressive"}, profile_mode="regional")
+        self.assertIn("memory_policy", str(caught.exception))
 
     def test_memory_error_skips_pillow_fallback(self) -> None:
         path = self._make_temp_path()
