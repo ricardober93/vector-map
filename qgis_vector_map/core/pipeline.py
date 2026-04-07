@@ -92,6 +92,7 @@ class PipelineOrchestrator:
             "profile_id": profile.profile_id,
             "profile_mode": profile.mode,
             "engine_name": profile.engine_name,
+            "execution_mode": getattr(request, "execution_mode", "auto"),
             "memory_policy": raster_load_options.memory_policy,
             "raster_load_options": {
                 "max_pixels": raster_load_options.max_pixels,
@@ -122,6 +123,92 @@ class PipelineOrchestrator:
                 "memory_policy='expert-override' enabled: execution may use higher memory "
                 "than strict defaults."
             )
+        return policy, warnings
+
+    def _check_auto_threshold(
+        self,
+        *,
+        source: Any,
+        max_pixels: int,
+    ) -> tuple[bool, int, int]:
+        """Check if raster exceeds auto-detection threshold without loading pixel data.
+
+        Returns:
+            (exceeds_threshold, pixel_count, threshold)
+        """
+        threshold = int(max_pixels * 0.75)
+
+        if isinstance(source, RasterFrame):
+            return False, source.width * source.height, threshold
+
+        if isinstance(source, (str, Path)):
+            source_path = Path(source)
+            if source_path.exists():
+                try:
+                    from osgeo import gdal
+                except Exception:
+                    return False, 0, threshold
+                dataset = gdal.Open(str(source_path))
+                if dataset is not None:
+                    width = int(getattr(dataset, "RasterXSize", 0) or 0)
+                    height = int(getattr(dataset, "RasterYSize", 0) or 0)
+                    pixels = width * height
+                    return pixels > threshold, pixels, threshold
+        return False, 0, threshold
+
+    def _resolve_execution_mode(
+        self,
+        *,
+        request: VectorizationRequest,
+        raster_load_options: RasterFrame.LoadOptions,
+        profile: ResolvedProfile,
+    ) -> tuple[str, list[str]]:
+        """Resolve execution_mode to effective memory_policy with auto-detection."""
+        execution_mode = getattr(request, "execution_mode", "auto")
+        warnings: list[str] = []
+
+        if execution_mode == "auto":
+            exceeds, pixels, threshold = self._check_auto_threshold(
+                source=request.source,
+                max_pixels=raster_load_options.max_pixels,
+            )
+
+            if exceeds:
+                if profile.mode == "regional":
+                    policy = "regional-tiles"
+                    warnings.append(
+                        f"Auto mode: tiled execution activated ({pixels:,} px exceeds {threshold:,} threshold)."
+                    )
+                else:
+                    policy = "strict"
+                    warnings.append(
+                        f"Auto mode: non-regional profile ({profile.mode}), falling back to strict. "
+                        f"Tiled execution not supported for this profile."
+                    )
+            else:
+                policy = "strict"
+        elif execution_mode == "strict":
+            exceeds, pixels, threshold = self._check_auto_threshold(
+                source=request.source,
+                max_pixels=raster_load_options.max_pixels,
+            )
+            if exceeds and profile.mode == "regional":
+                warnings.append(
+                    f"Strict mode: raster exceeds auto-detection threshold ({pixels:,} > {threshold:,} px). "
+                    f"May fail due to memory pressure. Consider switching to 'Tiled' execution mode."
+                )
+            policy = "strict"
+        elif execution_mode == "tiled":
+            if profile.mode != "regional":
+                raise ConfigurationError(
+                    "Tiled execution mode is only supported for regional profile."
+                )
+            policy = "regional-tiles"
+        else:
+            raise ConfigurationError(
+                f"Invalid execution_mode: {execution_mode}. Must be one of: auto, strict, tiled."
+            )
+
         return policy, warnings
 
     def _offset_coordinates(
@@ -532,9 +619,10 @@ class PipelineOrchestrator:
             profile_mode=profile.mode,
         )
         engine = self.resolve_engine(profile)
-        memory_policy, warnings = self._resolve_memory_policy(
+        memory_policy, warnings = self._resolve_execution_mode(
             request=request,
             raster_load_options=raster_load_options,
+            profile=profile,
         )
         if memory_policy == "regional-tiles":
             return self._run_regional_tiled_pipeline(

@@ -47,6 +47,38 @@ Raster Input
   - `strict` (default): aplica guardrails y abort temprano.
   - `expert-override`: requiere overrides explícitos de límites y registra advertencia operativa.
   - `regional-tiles`: para `regional-high-precision`, procesa por teselas y consolida salida en una capa única.
+
+### Flujo de Execution Mode
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Execution Mode Decision Flow                     │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  VectorizationRequest.execution_mode                                │
+│          │                                                           │
+│          ├─ "auto"  ──► Check raster size (GDAL metadata only)      │
+│          │                │                                          │
+│          │                ├─ ≤ 150M px  ──► memory_policy = "strict"│
+│          │                │                                           │
+│          │                └─ > 150M px ──► memory_policy =          │
+│          │                               "regional-tiles" (regional)│
+│          │                                            │              │
+│          │                                            └─ strict      │
+│          │                                                (non-      │
+│          │                                                 regional) │
+│          │                                                           │
+│          ├─ "strict" ──► memory_policy = "strict"                   │
+│          │                      (con warning si raster > 150M px)    │
+│          │                                                           │
+│          └─ "tiled" ──► memory_policy = "regional-tiles"             │
+│                             (solo para perfil regional)              │
+│                                                                      │
+│  UI Parameter: execution_mode dropdown (auto/strict/tiled)           │
+│  Default: auto                                                       │
+│  Auto-detection threshold: max_pixels * 0.75 (150M px default)     │
+└─────────────────────────────────────────────────────────────────────┘
+```
 - Si el preflight supera umbrales en modo `strict`, el proceso aborta temprano con mensaje accionable (recorte AOI, remuestreo, procesamiento por mosaicos), incluyendo recomendaciones cuantitativas (factor de reducción y tamaño objetivo).
 - Si GDAL falla con `MemoryError`, el sistema no intenta Pillow para evitar una segunda carga completa en memoria.
 - El fallback con Pillow permite hasta `1_000_000_000` píxeles.

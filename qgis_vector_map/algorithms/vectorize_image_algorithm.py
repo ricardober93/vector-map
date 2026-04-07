@@ -99,6 +99,7 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
 
     INPUT = "INPUT"
     PROFILE = "PROFILE"
+    EXECUTION_MODE = "EXECUTION_MODE"
     OUTPUT = "OUTPUT"
     OUTPUT_FORMAT = "OUTPUT_FORMAT"
     PARAMETERS = "PARAMETERS"
@@ -140,7 +141,7 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
             QgsProcessingParameterRasterLayer(self.INPUT, self._tr("Input raster layer"))
         )
         self.addParameter(
-            QgsProcessingParameterEnum(
+            _QgsProcessingParameterEnum(
                 self.PROFILE,
                 self._tr("Profile"),
                 options=[
@@ -148,6 +149,14 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
                     "edge-high-precision",
                     "linear-high-precision",
                 ],
+                defaultValue=0,
+            )
+        )
+        self.addParameter(
+            _QgsProcessingParameterEnum(
+                self.EXECUTION_MODE,
+                self._tr("Execution mode"),
+                options=["auto", "strict", "tiled"],
                 defaultValue=0,
             )
         )
@@ -188,10 +197,25 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
         try:
             parsed = json.loads(raw_parameters)
         except json.JSONDecodeError as exc:
-            raise QgsProcessingException(f"Invalid JSON parameters: {exc}") from exc
+            raise _QgsProcessingException(f"Invalid JSON parameters: {exc}") from exc
         if not isinstance(parsed, dict):
-            raise QgsProcessingException("Parameters JSON must decode to an object/dictionary.")
+            raise _QgsProcessingException("Parameters JSON must decode to an object/dictionary.")
         return parsed
+
+    def _resolve_execution_mode_parameter(self, parameters: dict[str, Any], context: Any) -> str:
+        execution_mode_options = ["auto", "strict", "tiled"]
+        mode_index = self.parameterAsEnum(parameters, self.EXECUTION_MODE, context)
+        if mode_index < 0 or mode_index >= len(execution_mode_options):
+            raise _QgsProcessingException("Invalid execution mode selection.")
+        return execution_mode_options[mode_index]
+
+    def _validate_execution_mode_for_profile(self, execution_mode: str, profile_id: str) -> None:
+        if execution_mode == "tiled":
+            if profile_id != "regional-high-precision":
+                raise _QgsProcessingException(
+                    "Tiled execution mode is only supported for the regional profile. "
+                    f"Current profile: {profile_id}."
+                )
 
     def processAlgorithm(
         self, parameters: dict[str, Any], context: Any, feedback: Any
@@ -216,8 +240,10 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
         ]
         profile_index = self.parameterAsEnum(parameters, self.PROFILE, context)
         if profile_index < 0 or profile_index >= len(profile_options):
-            raise QgsProcessingException("Invalid profile selection.")
+            raise _QgsProcessingException("Invalid profile selection.")
         profile_id = profile_options[profile_index]
+        execution_mode = self._resolve_execution_mode_parameter(parameters, context)
+        self._validate_execution_mode_for_profile(execution_mode, profile_id)
         raw_parameters = self.parameterAsString(parameters, self.PARAMETERS, context)
         output_destination = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
         if not output_destination:
@@ -250,6 +276,7 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
             layer_name=layer_name,
             parameters=profile_parameters,
             metadata={"processing_provider": "vector_map"},
+            execution_mode=execution_mode,
         )
 
         try:
@@ -260,8 +287,10 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
                 ),
                 cancel_callback=getattr(feedback, "isCanceled", lambda: False),
             )
+            for warning in result.warnings:
+                feedback.pushWarning(warning)
         except VectorMapError as exc:
-            raise QgsProcessingException(str(exc)) from exc
+            raise _QgsProcessingException(str(exc)) from exc
 
         return {
             self.OUTPUT: str(result.output_path),

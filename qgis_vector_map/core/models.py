@@ -44,6 +44,7 @@ class VectorizationRequest:
     parameters: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
     working_directory: str | Path | None = None
+    execution_mode: str = "auto"
 
 
 @dataclass(frozen=True)

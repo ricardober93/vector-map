@@ -1,7 +1,7 @@
 [general]
 name=Vector Map
 description=Local raster-to-vector processing plugin for QGIS Processing
-version=0.1.3
+version=0.2.0
 qgisMinimumVersion=3.44
 author=Ricardo Bermudez
 email=
@@ -14,4 +14,4 @@ hasProcessingProvider=yes
 homepage=https://github.com/ricardober93/vector-map
 repository=https://github.com/ricardober93/vector-map
 tracker=https://github.com/ricardober93/vector-map/issues
-changelog=Added memory policy modes (strict/expert-override/regional-tiles), quantitative preflight guidance, and regional tiled execution traceability.
+changelog=Added execution_mode parameter (auto/strict/tiled), auto-detection threshold for large rasters (150M px), and automatic tiled execution for oversized images.

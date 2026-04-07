@@ -20,6 +20,7 @@ This note records decisions used to stabilize `Vector Map` for QGIS 3.44+.
 3. Keep `PROFILE` and JSON `PARAMETERS` controls for profile-specific behavior.
 4. Keep provider diagnostics in QGIS logs to simplify support/debugging.
 5. Declare compatibility target explicitly as QGIS 3.44+.
+6. Add `EXECUTION_MODE` dropdown parameter for execution mode selection (auto/strict/tiled) to improve UX for large raster handling.
 
 ## Why these decisions
 

@@ -103,7 +103,34 @@ Policy:
 - Technical references and benchmark notes are tracked in:
   - `docs/processing-provider-benchmark.md`
 
-## Build e instalacion del plugin (macOS)
+## Build e instalacion del plugin
+
+### Windows
+
+1. Instalar `qgis-plugin-ci` (una vez):
+```powershell
+pip install qgis-plugin-ci
+```
+
+2. Ejecutar build:
+```powershell
+qgis-plugin-ci package
+```
+
+3. Resultado:
+- ZIP generado en `dist/qgis_vector_map-<version>.zip`
+- Plugin instalado en:
+  `C:\Users\<TuUsuario>\AppData\Roaming\QGIS\QGIS3\profiles\default\python\plugins\`
+
+4. Para instalar manualmente:
+   - Descomprimir el ZIP
+   - Copiar carpeta `qgis_vector_map` a la ruta anterior
+
+5. Recargar en QGIS:
+   - `Plugins > Manage and Install Plugins`
+   - Desactivar y activar `Vector Map` para recargar
+
+### macOS
 
 Paso a paso:
 
