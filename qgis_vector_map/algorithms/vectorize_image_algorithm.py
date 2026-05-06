@@ -104,6 +104,7 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
     OUTPUT_FORMAT = "OUTPUT_FORMAT"
     PARAMETERS = "PARAMETERS"
     LAYER_NAME = "LAYER_NAME"
+    ENGINE = "ENGINE"
 
     @staticmethod
     def _tr(message: str) -> str:
@@ -185,6 +186,14 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
             )
         )
         self.addParameter(
+            QgsProcessingParameterEnum(
+                self.ENGINE,
+                self._tr("Engine"),
+                options=["auto", "classic", "opencv"],
+                defaultValue=0,
+            )
+        )
+        self.addParameter(
             QgsProcessingParameterVectorDestination(
                 self.OUTPUT,
                 self._tr("Output vector layer"),
@@ -252,6 +261,13 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
         layer_name = self.parameterAsString(parameters, self.LAYER_NAME, context) or "vectorized"
         output_format = self.parameterAsString(parameters, self.OUTPUT_FORMAT, context) or "auto"
         profile_parameters = self._parse_parameters(raw_parameters)
+
+        engine_options = ["auto", "classic", "opencv"]
+        engine_index = self.parameterAsEnum(parameters, self.ENGINE, context)
+        if 0 <= engine_index < len(engine_options):
+            engine_name = engine_options[engine_index]
+            if engine_name != "auto":
+                profile_parameters["engine_name"] = f"{engine_name}-local"
 
         output_path = Path(output_destination)
         inferred_format = output_format

@@ -56,6 +56,12 @@ class EngineRegistry:
         self.engines.append(engine)
 
     def resolve(self, profile: Any) -> VectorizationEngine:
+        # If profile specifies an engine_name, try to find it by name first
+        engine_name = getattr(profile, 'engine_name', None)
+        if engine_name:
+            for engine in self.engines:
+                if engine.name == engine_name:
+                    return engine
         for engine in self.engines:
             if engine.supports(profile):
                 return engine
@@ -72,4 +78,10 @@ def build_default_registry() -> EngineRegistry:
 
     if not _DEFAULT_REGISTRY.engines:
         _DEFAULT_REGISTRY.register(ClassicVectorizationEngine())
+        # Try to register OpenCV engine (optional dependency)
+        try:
+            from .opencv import OpenCVVectorizationEngine
+            _DEFAULT_REGISTRY.register(OpenCVVectorizationEngine())
+        except Exception:
+            pass
     return _DEFAULT_REGISTRY

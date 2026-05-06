@@ -3,3 +3,6 @@ ruff>=0.6,<1
 pre-commit>=3.8,<5
 pyright[nodejs]>=1.1.390,<2
 qgis-stubs>=0.2.0.post1,<1
+numpy>=1.24
+opencv-python-headless>=4.8.0
+shapely>=2.0

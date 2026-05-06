@@ -39,16 +39,24 @@ class ProfileDefinition:
 
     def resolve(self, overrides: Mapping[str, Any] | None = None) -> ResolvedProfile:
         parameters = dict(self.default_parameters)
+        effective_engine_name = self.engine_name
+        effective_export_format = self.export_format
         if overrides:
-            parameters.update(dict(overrides))
+            for key, value in dict(overrides).items():
+                if key == 'engine_name':
+                    effective_engine_name = str(value)
+                elif key == 'export_format':
+                    effective_export_format = str(value)
+                else:
+                    parameters[key] = value
         return ResolvedProfile(
             profile_id=self.profile_id,
             display_name=self.display_name,
             mode=self.mode,
             description=self.description,
             parameters=parameters,
-            engine_name=self.engine_name,
-            export_format=self.export_format,
+            engine_name=effective_engine_name,
+            export_format=effective_export_format,
         )
 
 
@@ -67,8 +75,8 @@ PROFILE_REGISTRY: dict[str, ProfileDefinition] = {
             "min_hole_area": 4,
             "simplify_tolerance": 0.0,
             "connectivity": 4,
-            "max_pixels": 200_000_000,
-            "max_estimated_bytes": 8 * 1024 * 1024 * 1024,
+            "max_pixels": 500_000_000,
+            "max_estimated_bytes": 16 * 1024 * 1024 * 1024,
             "chunk_size": 2048,
             "tile_size": 2048,
             "memory_policy": "strict",
@@ -85,8 +93,8 @@ PROFILE_REGISTRY: dict[str, ProfileDefinition] = {
             "close_radius": 1,
             "min_line_length": 2,
             "simplify_tolerance": 0.5,
-            "max_pixels": 200_000_000,
-            "max_estimated_bytes": 8 * 1024 * 1024 * 1024,
+            "max_pixels": 500_000_000,
+            "max_estimated_bytes": 16 * 1024 * 1024 * 1024,
             "memory_policy": "strict",
         },
         export_format="auto",
@@ -104,8 +112,8 @@ PROFILE_REGISTRY: dict[str, ProfileDefinition] = {
             "skeletonize": True,
             "min_line_length": 2,
             "simplify_tolerance": 0.5,
-            "max_pixels": 200_000_000,
-            "max_estimated_bytes": 8 * 1024 * 1024 * 1024,
+            "max_pixels": 500_000_000,
+            "max_estimated_bytes": 16 * 1024 * 1024 * 1024,
             "memory_policy": "strict",
         },
         export_format="auto",

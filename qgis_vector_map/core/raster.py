@@ -9,12 +9,15 @@ from math import ceil, sqrt
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import numpy.typing as npt
+
 from .errors import ConfigurationError, DependencyError
 
 Pixel = Any
 MAX_PILLOW_IMAGE_PIXELS = 1_000_000_000
-DEFAULT_MAX_PIXELS = 200_000_000
-DEFAULT_MAX_ESTIMATED_BYTES = 8 * 1024 * 1024 * 1024
+DEFAULT_MAX_PIXELS = 500_000_000
+DEFAULT_MAX_ESTIMATED_BYTES = 16 * 1024 * 1024 * 1024
 DEFAULT_CHUNK_SIZE = 2048
 DEFAULT_MEMORY_POLICY = "strict"
 
@@ -28,6 +31,8 @@ def _normalize_pixel(pixel: Any) -> Pixel:
         return int(pixel)
     if isinstance(pixel, int):
         return pixel
+    if isinstance(pixel, (np.integer,)):
+        return int(pixel)
     if _is_sequence_like(pixel):
         normalized = tuple(int(channel) for channel in pixel)
         if not normalized:
@@ -84,6 +89,19 @@ def _pixel_to_grayscale(pixel: Pixel) -> int:
     return max(0, min(255, gray))
 
 
+def _rgb_to_grayscale_array(array: npt.NDArray) -> npt.NDArray:
+    """Convert an RGB uint8 array (H,W,3) to grayscale using the same formula as _pixel_to_grayscale."""
+    if array.ndim == 2:
+        return array
+    if array.shape[2] == 1:
+        return array[:, :, 0]
+    r = array[:, :, 0].astype(np.float64)
+    g = array[:, :, 1].astype(np.float64)
+    b = array[:, :, 2].astype(np.float64) if array.shape[2] >= 3 else np.zeros_like(r)
+    gray = np.round(0.299 * r + 0.587 * g + 0.114 * b).astype(np.uint8)
+    return gray
+
+
 @contextmanager
 def _temporary_max_image_pixels(image_module: Any):
     """Temporarily raise Pillow's decompression-bomb threshold for controlled fallback loads."""
@@ -100,12 +118,63 @@ def _temporary_max_image_pixels(image_module: Any):
 class RasterFrame:
     """In-memory raster representation used by the engines."""
 
-    pixels: tuple[tuple[Pixel, ...], ...]
-    width: int
-    height: int
-    bands: int
+    _array: npt.NDArray | None = field(default=None, repr=False)
+    _legacy_pixels: tuple[tuple[Pixel, ...], ...] | None = field(default=None, repr=False)
+    width: int = 0
+    height: int = 0
+    bands: int = 0
     source_name: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __init__(
+        self,
+        pixels,
+        width: int,
+        height: int,
+        bands: int,
+        source_name: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ):
+        if isinstance(pixels, np.ndarray):
+            object.__setattr__(self, '_array', np.ascontiguousarray(pixels, dtype=np.uint8))
+            object.__setattr__(self, '_legacy_pixels', None)
+        elif isinstance(pixels, np.ma.MaskedArray):
+            object.__setattr__(self, '_array', np.ascontiguousarray(pixels.filled(0), dtype=np.uint8))
+            object.__setattr__(self, '_legacy_pixels', None)
+        else:
+            object.__setattr__(self, '_array', np.array(pixels, dtype=np.uint8))
+            object.__setattr__(self, '_legacy_pixels', None)
+        object.__setattr__(self, 'width', width)
+        object.__setattr__(self, 'height', height)
+        object.__setattr__(self, 'bands', bands)
+        object.__setattr__(self, 'source_name', source_name)
+        object.__setattr__(self, 'metadata', dict(metadata or {}))
+
+    @property
+    def pixels(self) -> tuple[tuple[Pixel, ...], ...]:
+        """Backward-compatible pixel access. Converts numpy array to nested tuples on demand."""
+        if self._legacy_pixels is not None:
+            return self._legacy_pixels
+        arr = self._array
+        if arr is None:
+            return ()
+        if self.bands == 1:
+            return tuple(tuple(int(v) for v in row) for row in arr)
+        # Multi-band: each pixel is a tuple of channel values
+        if arr.ndim == 3:
+            # Shape: (H, W, bands) — pixel is (c0, c1, ...)
+            return tuple(
+                tuple(tuple(int(arr[y, x, b]) for b in range(self.bands)) for x in range(self.width))
+                for y in range(self.height)
+            )
+        else:
+            # 2D single-band fallback
+            return tuple(tuple(int(v) for v in row) for row in arr)
+
+    @property
+    def array(self) -> npt.NDArray:
+        """Direct numpy array access. Returns a view — do not modify in place."""
+        return self._array
 
     @dataclass(frozen=True)
     class LoadOptions:
@@ -177,7 +246,7 @@ class RasterFrame:
             inferred_bands = 1
 
         return cls(
-            pixels=tuple(rows),
+            pixels=rows,
             width=expected_width,
             height=len(rows),
             bands=inferred_bands,
@@ -251,13 +320,18 @@ class RasterFrame:
                 with Image.open(path) as image:  # type: ignore[union-attr]
                     image = image.convert("RGB")
                     width, height = image.size
-                    pixels = tuple(
-                        tuple(
-                            tuple(int(channel) for channel in image.getpixel((x, y)))
-                            for x in range(width)
-                        )
-                        for y in range(height)
-                    )
+                    # Build numpy array from pillow (handle fake test objects)
+                    try:
+                        arr = np.asarray(image, dtype=np.uint8)  # shape (H, W, 3)
+                    except (TypeError, ValueError):
+                        # Fallback for fake PillowImage objects: read pixel by pixel
+                        rows = []
+                        for y in range(height):
+                            row = []
+                            for x in range(width):
+                                row.append(list(image.getpixel((x, y))))
+                            rows.append(row)
+                        arr = np.array(rows, dtype=np.uint8)
         except Exception as exc:
             raise ConfigurationError(
                 "Pillow could not load the raster file. "
@@ -265,7 +339,7 @@ class RasterFrame:
             ) from exc
 
         return cls(
-            pixels=pixels,
+            pixels=arr,
             width=width,
             height=height,
             bands=3,
@@ -299,21 +373,29 @@ class RasterFrame:
             array = dataset.ReadAsArray()
             if array is None:
                 raise ConfigurationError(f"GDAL returned no data for raster file: {path}")
-            if getattr(array, "ndim", 0) == 2:
-                pixels = tuple(tuple(int(value) for value in row) for row in array.tolist())
+
+            # Convert masked arrays to regular
+            if isinstance(array, np.ma.MaskedArray):
+                array = array.filled(0)
+
+            # Convert to numpy, handling fake GDAL objects with .tolist()
+            try:
+                as_arr = np.asarray(array, dtype=np.uint8)
+            except (TypeError, ValueError):
+                as_arr = np.asarray(array.tolist(), dtype=np.uint8)
+
+            if as_arr.ndim == 2:
+                arr = as_arr
+                height = arr.shape[0]
+                width = arr.shape[1]
                 bands = 1
-                height = len(pixels)
-                width = len(pixels[0]) if pixels else 0
             else:
-                bands = int(array.shape[0])
-                height = int(array.shape[1])
-                width = int(array.shape[2])
-                pixels = tuple(
-                    tuple(
-                        tuple(int(array[band, y, x]) for band in range(bands)) for x in range(width)
-                    )
-                    for y in range(height)
-                )
+                bands = as_arr.shape[0]
+                height = int(as_arr.shape[1])
+                width = int(as_arr.shape[2])
+                # Transpose from (bands, H, W) to (H, W, bands)
+                arr = np.transpose(as_arr, (1, 2, 0))
+
             metadata: dict[str, Any] = {"source_path": str(path)}
             projection = dataset.GetProjection()
             if projection:
@@ -322,7 +404,7 @@ class RasterFrame:
             if geotransform:
                 metadata["geotransform"] = tuple(float(value) for value in geotransform)
             return cls(
-                pixels=pixels,
+                pixels=arr,
                 width=width,
                 height=height,
                 bands=bands,
@@ -422,6 +504,35 @@ class RasterFrame:
         }
 
     @classmethod
+    def _window_to_grayscale_ndarray(
+        cls,
+        window: Any,
+        width: int,
+        y_size: int,
+    ) -> npt.NDArray:
+        """Convert a GDAL ReadAsArray window to a (y_size, width) grayscale uint8 array."""
+        if isinstance(window, np.ma.MaskedArray):
+            window = window.filled(0)
+        try:
+            arr = np.asarray(window, dtype=np.uint8)
+        except (TypeError, ValueError):
+            arr = np.asarray(window.tolist(), dtype=np.uint8)
+        ndim = arr.ndim
+        if ndim == 2:
+            return arr
+        if ndim == 3:
+            # Shape is (bands, H, W) from GDAL
+            band_count = arr.shape[0]
+            if band_count == 1:
+                return arr[0]
+            # Multi-band to grayscale
+            arr_t = np.transpose(arr, (1, 2, 0))  # (H, W, bands)
+            return _rgb_to_grayscale_array(arr_t)
+        raise ConfigurationError(
+            f"Unsupported GDAL array shape for regional chunk load: ndim={ndim}."
+        )
+
+    @classmethod
     def _load_regional_with_gdal_chunks(
         cls,
         *,
@@ -432,7 +543,7 @@ class RasterFrame:
         height: int,
         bands: int,
     ) -> RasterFrame:
-        rows: list[tuple[int, ...]] = []
+        rows: list[npt.NDArray] = []
         for y_off in range(0, height, chunk_size):
             y_size = min(chunk_size, height - y_off)
             window = dataset.ReadAsArray(0, y_off, width, y_size)
@@ -440,35 +551,11 @@ class RasterFrame:
                 raise ConfigurationError(
                     f"GDAL returned no data for raster window y={y_off}:{y_off + y_size}."
                 )
-            ndim = int(getattr(window, "ndim", 0))
-            if ndim == 2:
-                chunk_rows = window.tolist()
-                for row in chunk_rows:
-                    rows.append(tuple(max(0, min(255, int(value))) for value in row))
-                continue
-            if ndim != 3:
-                raise ConfigurationError(
-                    f"Unsupported GDAL array shape for regional chunk load: ndim={ndim}."
-                )
+            gray_chunk = cls._window_to_grayscale_ndarray(window, width, y_size)
+            rows.append(gray_chunk)
 
-            chunk = window.tolist()
-            chunk_band_count = len(chunk)
-            if chunk_band_count == 0:
-                raise ConfigurationError(
-                    "GDAL returned an empty band stack for regional chunk load."
-                )
-            chunk_height = len(chunk[0])
-            for y_idx in range(chunk_height):
-                row: list[int] = []
-                for x_idx in range(width):
-                    if chunk_band_count == 1:
-                        gray = int(chunk[0][y_idx][x_idx])
-                    else:
-                        gray = _pixel_to_grayscale(
-                            tuple(int(chunk[band][y_idx][x_idx]) for band in range(chunk_band_count))
-                        )
-                    row.append(max(0, min(255, gray)))
-                rows.append(tuple(row))
+        # Stack into a single array
+        full_array = np.vstack(rows) if rows else np.empty((0, width), dtype=np.uint8)
 
         metadata: dict[str, Any] = {
             "source_path": str(path),
@@ -484,7 +571,7 @@ class RasterFrame:
             metadata["geotransform"] = tuple(float(value) for value in geotransform)
 
         return cls(
-            pixels=tuple(rows),
+            pixels=full_array,
             width=width,
             height=height,
             bands=1,
@@ -492,10 +579,51 @@ class RasterFrame:
             metadata=metadata,
         )
 
+    @classmethod
+    def iter_regional_chunks(
+        cls,
+        *,
+        dataset: Any,
+        path: Path | None = None,
+        chunk_size: int,
+        width: int,
+        height: int,
+        bands: int,
+    ):
+        """Generator that yields (y_offset, numpy_chunk_array) tuples.
+
+        Each chunk is an independent (y_size, width) uint8 grayscale array.
+        Does NOT accumulate — each chunk should be processed and freed.
+        """
+        for y_off in range(0, height, chunk_size):
+            y_size = min(chunk_size, height - y_off)
+            window = dataset.ReadAsArray(0, y_off, width, y_size)
+            if window is None:
+                raise ConfigurationError(
+                    f"GDAL returned no data for raster window y={y_off}:{y_off + y_size}."
+                )
+            gray_chunk = cls._window_to_grayscale_ndarray(window, width, y_size)
+            yield y_off, gray_chunk
+
     def pixel(self, x: int, y: int) -> Pixel:
+        arr = self._array
+        if arr is not None:
+            if self.bands == 1 or arr.ndim == 2:
+                return int(arr[y, x])
+            else:
+                return tuple(int(arr[y, x, b]) for b in range(self.bands))
         return self.pixels[y][x]
 
     def grayscale_matrix(self) -> tuple[tuple[int, ...], ...]:
+        arr = self._array
+        if arr is not None:
+            if self.bands == 1:
+                # Return view converted to tuple for backward compat, but no copy of the data
+                return tuple(tuple(int(v) for v in row) for row in arr)
+            else:
+                gray = _rgb_to_grayscale_array(arr)
+                return tuple(tuple(int(v) for v in row) for row in gray)
+        # Fallback for legacy pixels
         gray_rows: list[tuple[int, ...]] = []
         for row in self.pixels:
             gray_row: list[int] = []
@@ -505,6 +633,29 @@ class RasterFrame:
         return tuple(gray_rows)
 
     def rgb_matrix(self) -> tuple[tuple[tuple[int, int, int], ...], ...]:
+        arr = self._array
+        if arr is not None:
+            if self.bands == 1:
+                # Expand grayscale to RGB
+                return tuple(
+                    tuple((int(arr[y, x]), int(arr[y, x]), int(arr[y, x])) for x in range(self.width))
+                    for y in range(self.height)
+                )
+            elif arr.ndim == 3:
+                return tuple(
+                    tuple(
+                        (int(arr[y, x, 0]), int(arr[y, x, 1]), int(arr[y, x, 2]))
+                        if arr.shape[2] >= 3
+                        else (
+                            int(arr[y, x, 0]),
+                            int(arr[y, x, 0]) if arr.shape[2] < 2 else int(arr[y, x, 1]),
+                            0,
+                        )
+                        for x in range(self.width)
+                    )
+                    for y in range(self.height)
+                )
+        # Fallback for legacy pixels
         rgb_rows: list[tuple[tuple[int, int, int], ...]] = []
         for row in self.pixels:
             rgb_row: list[tuple[int, int, int]] = []

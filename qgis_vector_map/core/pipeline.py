@@ -262,31 +262,19 @@ class PipelineOrchestrator:
                 f"GDAL returned no data for tile x={x_off}:{x_off + x_size}, "
                 f"y={y_off}:{y_off + y_size}."
             )
-        ndim = int(getattr(window, "ndim", 0))
-        rows: list[list[int]] = []
-        if ndim == 2:
-            rows = [[max(0, min(255, int(value))) for value in row] for row in window.tolist()]
-        elif ndim == 3:
-            values = window.tolist()
-            band_count = len(values)
-            for row_idx in range(y_size):
-                row: list[int] = []
-                for col_idx in range(x_size):
-                    channels = [int(values[band][row_idx][col_idx]) for band in range(band_count)]
-                    row.append(self._to_grayscale(channels))
-                rows.append(row)
-        else:
-            raise ConfigurationError(
-                f"Unsupported GDAL array shape for tile load: ndim={ndim}."
-            )
+        # Use numpy-backed tile loading via RasterFrame._window_to_grayscale_ndarray
+        grayscale_array = RasterFrame._window_to_grayscale_ndarray(window, x_size, y_size)
         tile_metadata = {
             **source_metadata,
             "load_strategy": "gdal-regional-tiles",
             "tile_origin": [x_off, y_off],
             "tile_size": [x_size, y_size],
         }
-        return RasterFrame.from_matrix(
-            rows,
+        return RasterFrame(
+            pixels=grayscale_array,
+            width=x_size,
+            height=y_size,
+            bands=1,
             source_name=source_name,
             metadata=tile_metadata,
         )

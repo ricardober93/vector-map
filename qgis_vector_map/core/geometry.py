@@ -3,6 +3,20 @@
 from __future__ import annotations
 
 from collections import Counter, deque
+
+try:
+    from shapely.geometry import LineString as _ShapelyLineString
+    from shapely.geometry import Point as _ShapelyPoint
+    from shapely.geometry import Polygon as _ShapelyPolygon
+    from shapely.prepared import prep as _shapely_prep
+
+    _HAS_SHAPELY = True
+except ImportError:
+    _ShapelyLineString = None
+    _ShapelyPoint = None
+    _ShapelyPolygon = None
+    _shapely_prep = None
+    _HAS_SHAPELY = False
 from math import hypot
 from typing import Any, Iterable, Iterator, Sequence
 
@@ -266,6 +280,11 @@ def polygon_area(points: Sequence[Point]) -> float:
     ring = close_ring(points)
     if len(ring) < 4:
         return 0.0
+    if _HAS_SHAPELY:
+        try:
+            return float(_ShapelyPolygon(ring).area)
+        except Exception:
+            pass
     area = 0.0
     for index in range(len(ring) - 1):
         x1, y1 = ring[index]
@@ -319,10 +338,17 @@ def polygon_centroid(points: Sequence[Point]) -> Point:
 
 
 def point_in_polygon(point: Point, ring: Sequence[Point]) -> bool:
-    x, y = point
     cleaned = close_ring(ring)
     if len(cleaned) < 4:
         return False
+    if _HAS_SHAPELY:
+        try:
+            poly = _ShapelyPolygon(cleaned)
+            prepared = _shapely_prep(poly)
+            return bool(prepared.contains(_ShapelyPoint(point)))
+        except Exception:
+            pass
+    x, y = point
     inside = False
     for index in range(len(cleaned) - 1):
         x1, y1 = cleaned[index]
@@ -337,6 +363,16 @@ def simplify_path(points: Sequence[Point], tolerance: float = 0.0) -> list[Point
     cleaned = _remove_consecutive_duplicates(points)
     if len(cleaned) <= 2 or tolerance <= 0.0:
         return list(cleaned)
+    if _HAS_SHAPELY:
+        try:
+            simplified = _ShapelyLineString(cleaned).simplify(tolerance, preserve_topology=True)
+            if simplified.is_empty:
+                return list(cleaned)
+            coords = list(simplified.coords)
+            if len(coords) >= 2:
+                return [(float(x), float(y)) for x, y in coords]
+        except Exception:
+            pass
 
     def _rdp(segment: Sequence[Point]) -> list[Point]:
         if len(segment) <= 2:
