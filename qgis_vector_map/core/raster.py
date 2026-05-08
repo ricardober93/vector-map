@@ -484,6 +484,11 @@ class RasterFrame:
             tile_cols = ceil(width / tile_size)
             tile_rows = ceil(height / tile_size)
             tile_count = tile_cols * tile_rows
+            profile_hint = ""
+            if options.profile_mode and options.profile_mode != "regional":
+                profile_hint = (
+                    " Switch to 'regional-high-precision' profile to enable tiled processing."
+                )
             raise ConfigurationError(
                 "Raster preflight aborted due to estimated memory pressure. "
                 f"Size={width}x{height}, bands={bands}, pixels={pixels:,}, "
@@ -492,7 +497,8 @@ class RasterFrame:
                 f"max_estimated_bytes={_format_bytes(options.max_estimated_bytes)}. "
                 "Recommended actions: clip AOI, downsample, or process in smaller tiles. "
                 f"Suggested linear reduction factor >= {reduction_factor:.2f}x "
-                f"(target <= ~{target_width}x{target_height}). "
+                f"(target <= ~{target_width}x{target_height})."
+                f"{profile_hint} "
                 f"With tile_size={tile_size}, estimated tile grid is {tile_cols}x{tile_rows} "
                 f"({tile_count} tiles)."
             )

@@ -177,13 +177,17 @@ class PipelineOrchestrator:
                 if profile.mode == "regional":
                     policy = "regional-tiles"
                     warnings.append(
-                        f"Auto mode: tiled execution activated ({pixels:,} px exceeds {threshold:,} threshold)."
+                        f"Auto mode: tiled execution activated "
+                        f"({pixels:,} px exceeds {threshold:,} threshold)."
                     )
                 else:
-                    policy = "strict"
-                    warnings.append(
-                        f"Auto mode: non-regional profile ({profile.mode}), falling back to strict. "
-                        f"Tiled execution not supported for this profile."
+                    raise ConfigurationError(
+                        f"Auto mode: raster exceeds memory threshold "
+                        f"({pixels:,} px > {threshold:,}) "
+                        f"but tiled execution is only supported for the regional profile. "
+                        f"Current profile: {profile.mode}. "
+                        f"Switch to 'regional-high-precision' profile "
+                        f"to enable tiled processing for large rasters."
                     )
             else:
                 policy = "strict"
@@ -194,8 +198,10 @@ class PipelineOrchestrator:
             )
             if exceeds and profile.mode == "regional":
                 warnings.append(
-                    f"Strict mode: raster exceeds auto-detection threshold ({pixels:,} > {threshold:,} px). "
-                    f"May fail due to memory pressure. Consider switching to 'Tiled' execution mode."
+                    f"Strict mode: raster exceeds auto-detection threshold "
+                    f"({pixels:,} > {threshold:,} px). "
+                    f"May fail due to memory pressure. "
+                    f"Consider switching to 'Tiled' execution mode."
                 )
             policy = "strict"
         elif execution_mode == "tiled":

@@ -254,6 +254,70 @@ class RasterFrameLoadTests(unittest.TestCase):
         self.assertIn("Suggested linear reduction factor", str(caught.exception))
         self.assertIn("estimated tile grid", str(caught.exception))
 
+    def test_preflight_error_includes_profile_hint_for_edge_mode(self) -> None:
+        path = self._make_temp_path()
+
+        class _OversizedDataset(_FakeDataset):
+            def __init__(self) -> None:
+                super().__init__([[0]])
+                self.RasterXSize = 50_000
+                self.RasterYSize = 50_000
+                self.RasterCount = 4
+
+            def ReadAsArray(
+                self,
+                xoff: int = 0,
+                yoff: int = 0,
+                xsize: int | None = None,
+                ysize: int | None = None,
+            ):
+                raise AssertionError("ReadAsArray should not run after preflight rejection.")
+
+        fake_gdal = types.SimpleNamespace(
+            Open=lambda source: _OversizedDataset(),
+            GetDataTypeSize=lambda data_type: 16,
+        )
+        fake_osgeo = types.SimpleNamespace(gdal=fake_gdal)
+
+        options = RasterFrame.LoadOptions.from_parameters({}, profile_mode="edge")
+        with patch.dict(sys.modules, {"osgeo": fake_osgeo}, clear=False):
+            with self.assertRaises(ConfigurationError) as caught:
+                RasterFrame.load(path, options=options)
+
+        self.assertIn("Switch to 'regional-high-precision'", str(caught.exception))
+
+    def test_preflight_error_omits_profile_hint_for_regional_mode(self) -> None:
+        path = self._make_temp_path()
+
+        class _OversizedDataset(_FakeDataset):
+            def __init__(self) -> None:
+                super().__init__([[0]])
+                self.RasterXSize = 50_000
+                self.RasterYSize = 50_000
+                self.RasterCount = 4
+
+            def ReadAsArray(
+                self,
+                xoff: int = 0,
+                yoff: int = 0,
+                xsize: int | None = None,
+                ysize: int | None = None,
+            ):
+                raise AssertionError("ReadAsArray should not run after preflight rejection.")
+
+        fake_gdal = types.SimpleNamespace(
+            Open=lambda source: _OversizedDataset(),
+            GetDataTypeSize=lambda data_type: 16,
+        )
+        fake_osgeo = types.SimpleNamespace(gdal=fake_gdal)
+
+        options = RasterFrame.LoadOptions.from_parameters({}, profile_mode="regional")
+        with patch.dict(sys.modules, {"osgeo": fake_osgeo}, clear=False):
+            with self.assertRaises(ConfigurationError) as caught:
+                RasterFrame.load(path, options=options)
+
+        self.assertNotIn("Switch to 'regional-high-precision'", str(caught.exception))
+
     def test_load_options_defaults_to_strict_memory_policy(self) -> None:
         options = RasterFrame.LoadOptions.from_parameters({"chunk_size": 1024}, profile_mode="regional")
         self.assertEqual(options.memory_policy, "strict")

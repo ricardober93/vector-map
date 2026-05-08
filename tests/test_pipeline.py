@@ -11,7 +11,9 @@ from unittest.mock import patch
 
 from qgis_vector_map.core.errors import ConfigurationError
 from qgis_vector_map.core.models import VectorizationRequest
-from qgis_vector_map.core.pipeline import run_vectorization
+from qgis_vector_map.core.pipeline import PipelineOrchestrator, run_vectorization
+from qgis_vector_map.core.raster import RasterFrame
+from qgis_vector_map.processing_profiles import ResolvedProfile
 
 
 class _FakeArray2D:
@@ -263,7 +265,7 @@ class TiledProgressTests(unittest.TestCase):
             "tile_size": 2,
         }
         with patch.dict(sys.modules, {"osgeo": fake_osgeo}, clear=False):
-            result = run_vectorization(
+            _ = run_vectorization(
                 VectorizationRequest(
                     source=source_path,
                     profile_id="regional-high-precision",
@@ -276,3 +278,139 @@ class TiledProgressTests(unittest.TestCase):
 
         # Progress should have been reported
         self.assertTrue(len(progress_calls) > 0, "Progress callback was never invoked")
+
+
+class ExecutionModeResolutionTests(unittest.TestCase):
+    """Tests for _resolve_execution_mode memory policy resolution."""
+
+    def _make_orchestrator(self) -> PipelineOrchestrator:
+        return PipelineOrchestrator()
+
+    def _make_load_options(
+        self, *, max_pixels: int = 500_000_000, profile_mode: str | None = None
+    ) -> RasterFrame.LoadOptions:
+        return RasterFrame.LoadOptions(
+            max_pixels=max_pixels,
+            max_estimated_bytes=16 * 1024 * 1024 * 1024,
+            profile_mode=profile_mode,
+        )
+
+    def _make_profile(self, mode: str = "regional") -> ResolvedProfile:
+        return ResolvedProfile(
+            profile_id=f"{mode}-high-precision",
+            display_name=f"{mode.title()} High Precision",
+            mode=mode,
+            description="Test profile",
+            parameters={},
+        )
+
+    def test_auto_regional_below_threshold_returns_strict(self) -> None:
+        orch = self._make_orchestrator()
+        request = VectorizationRequest(
+            source=[[0, 1], [1, 0]],
+            profile_id="regional-high-precision",
+            output_path=Path("/tmp/out.geojson"),
+            execution_mode="auto",
+        )
+        options = self._make_load_options(profile_mode="regional")
+        profile = self._make_profile(mode="regional")
+        policy, warnings = orch._resolve_execution_mode(
+            request=request, raster_load_options=options, profile=profile
+        )
+        self.assertEqual(policy, "strict")
+        self.assertEqual(len(warnings), 0)
+
+    def test_auto_regional_above_threshold_returns_tiled(self) -> None:
+        orch = self._make_orchestrator()
+        source_path = Path("/tmp/huge_raster.tif")
+        request = VectorizationRequest(
+            source=str(source_path),
+            profile_id="regional-high-precision",
+            output_path=Path("/tmp/out.geojson"),
+            execution_mode="auto",
+        )
+        options = self._make_load_options(max_pixels=1, profile_mode="regional")
+        profile = self._make_profile(mode="regional")
+        threshold_result = (True, 7_429_106_145, 375_000_000)
+        with patch.object(orch, "_check_auto_threshold", return_value=threshold_result):
+            policy, warnings = orch._resolve_execution_mode(
+                request=request, raster_load_options=options, profile=profile
+            )
+        self.assertEqual(policy, "regional-tiles")
+        self.assertTrue(any("tiled execution activated" in w for w in warnings))
+
+    def test_auto_edge_above_threshold_raises_configuration_error(self) -> None:
+        orch = self._make_orchestrator()
+        source_path = Path("/tmp/huge_raster.tif")
+        request = VectorizationRequest(
+            source=str(source_path),
+            profile_id="edge-high-precision",
+            output_path=Path("/tmp/out.geojson"),
+            execution_mode="auto",
+        )
+        options = self._make_load_options(max_pixels=1, profile_mode="edge")
+        profile = self._make_profile(mode="edge")
+        threshold_result = (True, 7_429_106_145, 375_000_000)
+        with patch.object(orch, "_check_auto_threshold", return_value=threshold_result):
+            with self.assertRaises(ConfigurationError) as caught:
+                orch._resolve_execution_mode(
+                    request=request, raster_load_options=options, profile=profile
+                )
+        msg = str(caught.exception)
+        self.assertIn("tiled execution is only supported for the regional profile", msg)
+        self.assertIn("edge", msg)
+
+    def test_auto_linear_above_threshold_raises_configuration_error(self) -> None:
+        orch = self._make_orchestrator()
+        source_path = Path("/tmp/huge_raster.tif")
+        request = VectorizationRequest(
+            source=str(source_path),
+            profile_id="linear-high-precision",
+            output_path=Path("/tmp/out.geojson"),
+            execution_mode="auto",
+        )
+        options = self._make_load_options(max_pixels=1, profile_mode="linear")
+        profile = self._make_profile(mode="linear")
+        threshold_result = (True, 7_429_106_145, 375_000_000)
+        with patch.object(orch, "_check_auto_threshold", return_value=threshold_result):
+            with self.assertRaises(ConfigurationError) as caught:
+                orch._resolve_execution_mode(
+                    request=request, raster_load_options=options, profile=profile
+                )
+        msg = str(caught.exception)
+        self.assertIn("tiled execution is only supported for the regional profile", msg)
+        self.assertIn("linear", msg)
+
+    def test_strict_regional_above_threshold_warns(self) -> None:
+        orch = self._make_orchestrator()
+        source_path = Path("/tmp/huge_raster.tif")
+        request = VectorizationRequest(
+            source=str(source_path),
+            profile_id="regional-high-precision",
+            output_path=Path("/tmp/out.geojson"),
+            execution_mode="strict",
+        )
+        options = self._make_load_options(max_pixels=1, profile_mode="regional")
+        profile = self._make_profile(mode="regional")
+        threshold_result = (True, 7_429_106_145, 375_000_000)
+        with patch.object(orch, "_check_auto_threshold", return_value=threshold_result):
+            policy, warnings = orch._resolve_execution_mode(
+                request=request, raster_load_options=options, profile=profile
+            )
+        self.assertEqual(policy, "strict")
+        self.assertTrue(any("Consider switching" in w for w in warnings))
+
+    def test_tiled_regional_returns_tiled(self) -> None:
+        orch = self._make_orchestrator()
+        request = VectorizationRequest(
+            source=[[0, 1], [1, 0]],
+            profile_id="regional-high-precision",
+            output_path=Path("/tmp/out.geojson"),
+            execution_mode="tiled",
+        )
+        options = self._make_load_options(profile_mode="regional")
+        profile = self._make_profile(mode="regional")
+        policy, warnings = orch._resolve_execution_mode(
+            request=request, raster_load_options=options, profile=profile
+        )
+        self.assertEqual(policy, "regional-tiles")
