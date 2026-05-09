@@ -1,7 +1,7 @@
 [general]
 name=Vector Map
 description=Local raster-to-vector processing plugin for QGIS Processing
-version=0.5.0
+version=0.5.1
 qgisMinimumVersion=3.44
 author=Ricardo Bermudez
 email=
@@ -14,4 +14,4 @@ hasProcessingProvider=yes
 homepage=https://github.com/ricardober93/vector-map
 repository=https://github.com/ricardober93/vector-map
 tracker=https://github.com/ricardober93/vector-map/issues
-changelog=Added topology validation and repair for polygons (ring closure, self-intersection detection, winding order). Added snap-to-grid for shared boundaries. Exposed Canny parameters in edge profile. Improved K-means quantization (PP centers, configurable attempts/eps). Fixed foreground_threshold bug in OpenCV linear mode. Replaced __import__ hack with proper StageName import.
+changelog=Fix: PyQt5/PyQt6 dual import for QGIS 3.x and 4.x compatibility. Fix: IndexError guard for empty geometries in QgsFeatureSink. Fix: NaN/Inf validation in geotransform. Fix: Canny params only injected for edge profile. Added line stitching for tiled edge/linear modes. Added topology tests. Added mixed geometry warning. Added max_endpoints limit to find_junctions.

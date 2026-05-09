@@ -764,7 +764,10 @@ def snap_coordinates_to_grid(
             [[_snap_point(pt) for pt in ring] for ring in polygon]
             for polygon in coordinates
         ]
-    
+
+    if geometry_type == "GeometryCollection":
+        return coordinates
+
     return coordinates
 
 
@@ -779,17 +782,30 @@ def distance_between_points(p1: list[float], p2: list[float]) -> float:
 
 
 def find_junctions(
-    features: list, snap_tolerance: float = 1.0
+    features: list, snap_tolerance: float = 1.0, max_endpoints: int = 10000
 ) -> dict[tuple[float, float], list[int]]:
     """Find junction points where line endpoints meet or are within snap_tolerance.
+
+    Complexity: O(K^2) where K is the number of unique endpoints. If max_endpoints
+    is exceeded, the function returns early with a warning logged.
 
     Args:
         features: List of VectorFeature objects with geometry_type "LineString"
         snap_tolerance: Maximum distance to consider two endpoints as connected
+        max_endpoints: Maximum number of endpoints before early return
 
     Returns:
         Dictionary mapping junction coordinate tuples to lists of feature indices
     """
+    if len(features) * 2 > max_endpoints:
+        import warnings
+        warnings.warn(
+            f"find_junctions: {len(features)} features produce {len(features) * 2} endpoints, "
+            f"exceeding max_endpoints={max_endpoints}. Skipping topology extraction. "
+            f"Increase max_endpoints or reduce feature count."
+        )
+        return {}
+
     endpoint_map: dict[tuple[float, float], list[int]] = {}
 
     for idx, feature in enumerate(features):
@@ -856,6 +872,90 @@ def close_contour_to_polygon(
     return [ring]
 
 
+def stitch_line_features(
+    features: list, snap_tolerance: float = 1.0
+) -> list:
+    """Merge LineString features whose endpoints are within snap_tolerance.
+    
+    Iteratively merges adjacent LineStrings by checking if the endpoint of
+    one line is within snap_tolerance of the start/end point of another line.
+    Merged features inherit the properties of the first feature in the merge group.
+    
+    This is designed to reconnect lines that were split at tile boundaries
+    during tiled processing.
+    
+    Complexity: O(N*K) where N is the number of features and K is the
+    number of merge iterations (typically small).
+    
+    Args:
+        features: List of VectorFeature objects with geometry_type "LineString"
+        snap_tolerance: Maximum distance to consider two endpoints as connected
+    
+    Returns:
+        List of VectorFeature objects with merged LineStrings.
+    """
+    from .models import VectorFeature
+    
+    line_features = [f for f in features if f.geometry_type == "LineString"]
+    other_features = [f for f in features if f.geometry_type != "LineString"]
+    
+    if not line_features:
+        return list(features)
+    
+    merged = [False] * len(line_features)
+    result_lines = []
+    
+    for i in range(len(line_features)):
+        if merged[i]:
+            continue
+        
+        current_coords = list(line_features[i].coordinates)
+        current_props = dict(line_features[i].properties)
+        merged[i] = True
+        
+        changed = True
+        while changed:
+            changed = False
+            for j in range(len(line_features)):
+                if merged[j]:
+                    continue
+                other_coords = line_features[j].coordinates
+                if len(other_coords) < 2 or len(current_coords) < 2:
+                    continue
+                
+                start_other = other_coords[0]
+                end_other = other_coords[-1]
+                start_current = current_coords[0]
+                end_current = current_coords[-1]
+                
+                if distance_between_points(end_current, start_other) <= snap_tolerance:
+                    current_coords.extend(other_coords[1:])
+                    merged[j] = True
+                    changed = True
+                elif distance_between_points(end_current, end_other) <= snap_tolerance:
+                    current_coords.extend(list(reversed(other_coords))[1:])
+                    merged[j] = True
+                    changed = True
+                elif distance_between_points(start_current, start_other) <= snap_tolerance:
+                    current_coords = list(reversed(other_coords)) + current_coords[1:]
+                    merged[j] = True
+                    changed = True
+                elif distance_between_points(start_current, end_other) <= snap_tolerance:
+                    current_coords = other_coords + current_coords[1:]
+                    merged[j] = True
+                    changed = True
+        
+        result_lines.append(
+            VectorFeature(
+                geometry_type="LineString",
+                coordinates=current_coords,
+                properties=current_props,
+            )
+        )
+    
+    return result_lines + other_features
+
+
 def apply_geotransform(
     geometry_type: str,
     coordinates: Any,
@@ -875,7 +975,10 @@ def apply_geotransform(
     origin_x, pixel_width, rot_x, origin_y, rot_y, pixel_height = geotransform[:6]
 
     def _transform_point(pt: Any) -> list[float]:
+        import math
         col, row = float(pt[0]), float(pt[1])
+        if math.isnan(col) or math.isnan(row) or math.isinf(col) or math.isinf(row):
+            return [float('nan'), float('nan')]
         x = origin_x + col * pixel_width + row * rot_x
         y = origin_y + col * rot_y + row * pixel_height
         return [x, y]
@@ -897,5 +1000,13 @@ def apply_geotransform(
             [[_transform_point(pt) for pt in ring] for ring in polygon]
             for polygon in coordinates
         ]
+
+    if geometry_type == "GeometryCollection":
+        import warnings
+        warnings.warn(
+            "apply_geotransform: GeometryCollection is not supported; "
+            "coordinates returned unchanged."
+        )
+        return coordinates
 
     return coordinates

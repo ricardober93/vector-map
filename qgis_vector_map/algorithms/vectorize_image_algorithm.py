@@ -30,17 +30,15 @@ _QgsWkbTypes: Any
 _QtVariantType: Any
 
 try:  # pragma: no cover - available in local dev and QGIS runtimes
-    from PyQt5.QtCore import QCoreApplication as _QCoreApplication
-    from PyQt5.QtCore import QVariant as _QtVariantType
-except Exception:  # pragma: no cover - import-safe fallback
-
-    class _FallbackQCoreApplication:
-        @staticmethod
-        def translate(_context: str, message: str) -> str:
-            return message
-
-    _QCoreApplication = _FallbackQCoreApplication
-    _QtVariantType = str
+    from PyQt6.QtCore import QCoreApplication as _QCoreApplication
+    _QtVariantType = str  # PyQt6 doesn't have QVariant, use str for field types
+except ImportError:  # pragma: no cover - fall back to PyQt5
+    try:
+        from PyQt5.QtCore import QCoreApplication as _QCoreApplication
+        from PyQt5.QtCore import QVariant as _QtVariantType
+    except ImportError:
+        _QCoreApplication = type('QtCore', (), {'translate': staticmethod(lambda _c, m: m)})()
+        _QtVariantType = str
 
 try:  # pragma: no cover - optional QGIS dependency
     from qgis.core import (
@@ -109,16 +107,23 @@ except Exception:  # pragma: no cover - allow imports without QGIS
         pass
 
     class _FallbackQgsFeature:
-        pass
+        def __init__(self, *args, **kwargs):
+            pass
+        def setGeometry(self, geom):
+            pass
+        def setAttribute(self, name, value):
+            pass
 
     class _FallbackQgsFeatureSink:
         pass
 
     class _FallbackQgsField:
-        pass
+        def __init__(self, *args, **kwargs):
+            pass
 
     class _FallbackQgsFields:
-        pass
+        def append(self, field):
+            pass
 
     class _FallbackQgsGeometry:
         pass
@@ -218,21 +223,31 @@ def _resolve_qgs_geometry_type(geometry_types: set[str]) -> Any:
 
 def _build_qgs_geometry(geometry_type: str, coordinates: Any) -> Any:
     if geometry_type == "Point":
+        if not coordinates or len(coordinates) < 2:
+            return QgsGeometry()
         return QgsGeometry.fromPointXY(QgsPointXY(coordinates[0], coordinates[1]))
 
     if geometry_type in {"LineString", "MultiPoint"}:
+        if not coordinates:
+            return QgsGeometry()
         points = [QgsPointXY(pt[0], pt[1]) for pt in coordinates]
         return QgsGeometry.fromPolylineXY(points)
 
     if geometry_type == "Polygon":
+        if not coordinates:
+            return QgsGeometry()
         rings = [[QgsPointXY(pt[0], pt[1]) for pt in ring] for ring in coordinates]
         return QgsGeometry.fromPolygonXY(rings)
 
     if geometry_type == "MultiLineString":
+        if not coordinates:
+            return QgsGeometry()
         lines = [[QgsPointXY(pt[0], pt[1]) for pt in line] for line in coordinates]
         return QgsGeometry.fromMultiPolylineXY(lines)
 
     if geometry_type == "MultiPolygon":
+        if not coordinates:
+            return QgsGeometry()
         polygons = [
             [[QgsPointXY(pt[0], pt[1]) for pt in ring] for ring in polygon]
             for polygon in coordinates
@@ -454,15 +469,16 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
         output_format = self.parameterAsString(parameters, self.OUTPUT_FORMAT, context) or "auto"
         profile_parameters = self._parse_parameters(raw_parameters)
 
-        canny_low = self.parameterAsString(parameters, self.EDGE_CANNY_LOW, context)
-        if canny_low:
-            profile_parameters["edge_canny_low"] = canny_low
-        canny_high = self.parameterAsString(parameters, self.EDGE_CANNY_HIGH, context)
-        if canny_high:
-            profile_parameters["edge_canny_high"] = canny_high
-        edge_blur = self.parameterAsString(parameters, self.EDGE_BLUR, context)
-        if edge_blur:
-            profile_parameters["edge_blur"] = edge_blur
+        if profile_id == "edge-high-precision":
+            canny_low = self.parameterAsString(parameters, self.EDGE_CANNY_LOW, context)
+            if canny_low:
+                profile_parameters["edge_canny_low"] = canny_low
+            canny_high = self.parameterAsString(parameters, self.EDGE_CANNY_HIGH, context)
+            if canny_high:
+                profile_parameters["edge_canny_high"] = canny_high
+            edge_blur = self.parameterAsString(parameters, self.EDGE_BLUR, context)
+            if edge_blur:
+                profile_parameters["edge_blur"] = edge_blur
 
         engine_options = ["auto", "classic", "opencv"]
         engine_index = self.parameterAsEnum(parameters, self.ENGINE, context)
@@ -474,7 +490,14 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
         raster_crs = raster_layer.crs()
         crs_is_valid = raster_crs is not None and raster_crs.isValid()
         if not crs_is_valid:
-            fallback_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+            fallback_crs = None
+            try:
+                fallback_crs = QgsCoordinateReferenceSystem.fromEpsgId(4326)
+            except (AttributeError, TypeError):
+                try:
+                    fallback_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+                except Exception:
+                    fallback_crs = None
             project_crs = None
             try:
                 project = QgsProject.instance()
@@ -537,6 +560,12 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
 
         geometry_types = {f.geometry_type for f in vector_layer.features}
         wkb_type = _resolve_qgs_geometry_type(geometry_types)
+        if len(geometry_types) > 1:
+            feedback.pushWarning(
+                f"Mixed geometry types detected: {sorted(geometry_types)}. "
+                f"Output layer will use geometry type {wkb_type}. "
+                f"Some geometry types may not display correctly."
+            )
 
         fields = QgsFields()
         field_names = sorted(

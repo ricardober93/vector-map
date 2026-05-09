@@ -21,7 +21,7 @@ from .models import (
     VectorizationRequest,
     VectorLayer,
 )
-from .geometry import apply_geotransform
+from .geometry import apply_geotransform, stitch_line_features
 from .raster import RasterFrame
 
 
@@ -629,6 +629,20 @@ class PipelineOrchestrator:
                 "No geotransform found in raster metadata; "
                 "output coordinates will be in pixel space."
             )
+
+        if profile.mode != "regional":
+            layer = context.artifacts["vector_layer"]
+            if isinstance(layer, VectorLayer):
+                tolerance = float(profile.parameter("simplify_tolerance", 0.5))
+                stitched = stitch_line_features(layer.features, snap_tolerance=max(tolerance, 1.0))
+                layer = VectorLayer(
+                    features=stitched,
+                    name=layer.name,
+                    crs=layer.crs,
+                    geotransform=layer.geotransform,
+                    metadata=layer.metadata,
+                )
+                context.store_artifact("vector_layer", layer)
 
         context = self._run_stage(
             context=context,

@@ -10,6 +10,12 @@ from qgis_vector_map.core.geometry import (
     point_in_polygon,
     simplify_path,
     apply_geotransform,
+    validate_polygon_rings,
+    repair_polygon_coordinates,
+    snap_coordinates_to_grid,
+    close_contour_to_polygon,
+    find_junctions,
+    distance_between_points,
 )
 
 
@@ -177,6 +183,139 @@ class GeotransformTests(unittest.TestCase):
         coords = [[1, 2], [3, 4]]
         result = apply_geotransform("UnknownType", coords, (0, 1, 0, 0, 0, 1))
         self.assertEqual(result, coords)
+
+
+class ValidatePolygonRingsTests(unittest.TestCase):
+    def test_closed_ring_no_issues(self):
+        rings = [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]]
+        issues = validate_polygon_rings(rings)
+        self.assertEqual(len(issues), 0)
+
+    def test_unclosed_ring(self):
+        rings = [[[0, 0], [10, 0], [10, 10], [0, 10]]]
+        issues = validate_polygon_rings(rings)
+        self.assertTrue(any("not closed" in i for i in issues))
+
+    def test_fewer_than_4_points(self):
+        rings = [[[0, 0], [10, 0], [5, 5]]]
+        issues = validate_polygon_rings(rings)
+        self.assertTrue(any("fewer than 4" in i for i in issues))
+
+    def test_empty_rings(self):
+        issues = validate_polygon_rings([])
+        self.assertEqual(len(issues), 0)
+
+
+class RepairPolygonCoordinatesTests(unittest.TestCase):
+    def test_close_unclosed_ring(self):
+        rings = [[[0, 0], [10, 0], [10, 10], [0, 10]]]
+        repaired = repair_polygon_coordinates(rings)
+        self.assertEqual(len(repaired), 1)
+        self.assertEqual(repaired[0][0], repaired[0][-1])
+
+    def test_remove_consecutive_duplicates(self):
+        rings = [[[0, 0], [0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]]
+        repaired = repair_polygon_coordinates(rings)
+        self.assertEqual(len(repaired), 1)
+        self.assertEqual(repaired[0][0], repaired[0][-1])
+
+    def test_inferior_ring_winding(self):
+        exterior = [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
+        interior = [[2, 2], [2, 8], [8, 8], [8, 2], [2, 2]]
+        repaired = repair_polygon_coordinates([exterior, interior])
+        self.assertEqual(len(repaired), 2)
+
+    def test_drop_degenerate_ring(self):
+        rings = [[[0, 0], [10, 0], [0, 0]]]
+        repaired = repair_polygon_coordinates(rings)
+        self.assertEqual(len(repaired), 0)
+
+
+class SnapToGridTests(unittest.TestCase):
+    def test_snap_to_grid(self):
+        coords = [[[0.12, 0.48], [1.23, 4.56], [1.23, 4.56], [0.12, 0.48]]]
+        result = snap_coordinates_to_grid(coords, "Polygon", 0.1)
+        self.assertAlmostEqual(result[0][0][0], 0.1)
+        self.assertAlmostEqual(result[0][0][1], 0.5)
+
+    def test_snap_disabled_with_zero(self):
+        coords = [[[0.12, 0.48], [1.23, 4.56], [0.12, 0.48]]]
+        result = snap_coordinates_to_grid(coords, "Polygon", 0.0)
+        self.assertEqual(result, coords)
+
+    def test_snap_linestring(self):
+        coords = [[0.15, 0.25], [2.37, 3.82]]
+        result = snap_coordinates_to_grid(coords, "LineString", 0.5)
+        self.assertAlmostEqual(result[0][0], 0.0)
+        self.assertAlmostEqual(result[0][1], 0.0)
+        self.assertAlmostEqual(result[1][0], 2.5)
+        self.assertAlmostEqual(result[1][1], 4.0)
+
+
+class CloseContourTests(unittest.TestCase):
+    def test_close_open_contour(self):
+        coords = [[0, 0], [10, 0], [10, 10], [0, 10]]
+        result = close_contour_to_polygon(coords, max_gap=20.0)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0][0], result[0][-1])
+
+    def test_already_closed(self):
+        coords = [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
+        result = close_contour_to_polygon(coords, max_gap=2.0)
+        self.assertIsNotNone(result)
+
+    def test_too_far_to_close(self):
+        coords = [[0, 0], [10, 0], [10, 10], [0, 10]]
+        result = close_contour_to_polygon(coords, max_gap=0.1)
+        self.assertIsNone(result)
+
+    def test_fewer_than_3_points(self):
+        coords = [[0, 0], [10, 0]]
+        result = close_contour_to_polygon(coords, max_gap=2.0)
+        self.assertIsNone(result)
+
+
+class FindJunctionsTests(unittest.TestCase):
+    def test_two_lines_meet_at_point(self):
+        from qgis_vector_map.core.models import VectorFeature
+        features = [
+            VectorFeature(geometry_type="LineString", coordinates=[[0, 0], [5, 5]], properties={}),
+            VectorFeature(geometry_type="LineString", coordinates=[[5, 5], [10, 5]], properties={}),
+        ]
+        junctions = find_junctions(features, snap_tolerance=1.0)
+        self.assertEqual(len(junctions), 1)
+
+    def test_no_junctions(self):
+        from qgis_vector_map.core.models import VectorFeature
+        features = [
+            VectorFeature(geometry_type="LineString", coordinates=[[0, 0], [5, 0]], properties={}),
+            VectorFeature(geometry_type="LineString", coordinates=[[0, 10], [5, 10]], properties={}),
+        ]
+        junctions = find_junctions(features, snap_tolerance=1.0)
+        self.assertEqual(len(junctions), 0)
+
+    def test_max_endpoints_exceeded(self):
+        import warnings
+        from qgis_vector_map.core.models import VectorFeature
+        features = [
+            VectorFeature(geometry_type="LineString", coordinates=[[i, i], [i+1, i+1]], properties={})
+            for i in range(6000)
+        ]
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            junctions = find_junctions(features, snap_tolerance=1.0, max_endpoints=10000)
+            self.assertEqual(len(junctions), 0)
+            self.assertTrue(any("max_endpoints" in str(warning.message) for warning in w))
+
+
+class DistanceBetweenPointsTests(unittest.TestCase):
+    def test_distance(self):
+        d = distance_between_points([0, 0], [3, 4])
+        self.assertAlmostEqual(d, 5.0)
+
+    def test_same_point(self):
+        d = distance_between_points([5, 5], [5, 5])
+        self.assertAlmostEqual(d, 0.0)
 
 
 if __name__ == "__main__":
