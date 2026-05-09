@@ -23,9 +23,10 @@ Guía rápida para cualquier agente o colaborador que trabaje en este repositori
 
 1. Instalar dependencias de desarrollo:
    - `python3 -m pip install -r requirements-dev.txt`
-2. Empaquetar plugin:
-   - `qgis-plugin-ci package`
-3. Validar baseline de precisión:
+2. Bump de versión (SemVer) sincronizado en `qgis_vector_map/metadata.txt` y `qgis_vector_map/__init__.py`.
+3. Empaquetar plugin en `dist/`:
+   - `mkdir -p dist && qgis-plugin-ci package <VERSIÓN> && mv qgis_vector_map.<VERSIÓN>.zip dist/`
+4. Validar baseline de precisión:
    - `python3 scripts/evaluate_regional_profile.py data/reference/sample_runs/regional_pass.json --baseline data/reference/baseline_thresholds.json`
 
 ## Reglas de trabajo

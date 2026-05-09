@@ -1,7 +1,7 @@
 [general]
 name=Vector Map
 description=Local raster-to-vector processing plugin for QGIS Processing
-version=0.3.0
+version=0.5.0
 qgisMinimumVersion=3.44
 author=Ricardo Bermudez
 email=
@@ -14,4 +14,4 @@ hasProcessingProvider=yes
 homepage=https://github.com/ricardober93/vector-map
 repository=https://github.com/ricardober93/vector-map
 tracker=https://github.com/ricardober93/vector-map/issues
-changelog=Added execution_mode parameter (auto/strict/tiled), auto-detection threshold for large rasters (150M px), and automatic tiled execution for oversized images.
+changelog=Added topology validation and repair for polygons (ring closure, self-intersection detection, winding order). Added snap-to-grid for shared boundaries. Exposed Canny parameters in edge profile. Improved K-means quantization (PP centers, configurable attempts/eps). Fixed foreground_threshold bug in OpenCV linear mode. Replaced __import__ hack with proper StageName import.

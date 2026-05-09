@@ -12,16 +12,22 @@ from ..core.geometry import (
     auto_threshold,
     binary_close,
     binary_open,
+    close_contour_to_polygon,
     close_ring,
+    distance_between_points,
+    find_junctions,
     majority_filter,
     otsu_threshold,
     polygon_area,
     polygonize_label_map,
     polyline_length,
+    repair_polygon_coordinates,
     simplify_path,
+    snap_coordinates_to_grid,
     sobel_edge_magnitude,
     threshold_matrix,
     trace_skeleton_paths,
+    validate_polygon_rings,
     zhang_suen_thinning,
 )
 from ..core.models import PipelineContext, VectorFeature, VectorLayer
@@ -262,8 +268,16 @@ class ClassicVectorizationEngine(VectorizationEngine):
                 if abs(polygon_area(cleaned_ring)) < min_area:
                     continue
                 rings.append([[float(x), float(y)] for x, y in cleaned_ring])
+
+            rings = repair_polygon_coordinates(rings)
+            snap_grid_size = float(parameters.get("snap_grid_size", 0.0))
+            if snap_grid_size > 0:
+                rings = snap_coordinates_to_grid(rings, "Polygon", snap_grid_size)
             if not rings:
                 continue
+
+            issues = validate_polygon_rings(rings)
+
             cleaned_features.append(
                 VectorFeature(
                     geometry_type="Polygon",
@@ -334,6 +348,9 @@ class ClassicVectorizationEngine(VectorizationEngine):
     def _postprocess_lines(self, layer: VectorLayer, parameters: dict[str, Any]) -> VectorLayer:
         tolerance = float(parameters.get("simplify_tolerance", 0.5))
         min_line_length = int(parameters.get("min_line_length", 2))
+        extract_topology = bool(parameters.get("extract_topology", False))
+        close_contours = bool(parameters.get("close_contours", False))
+
         cleaned: list[VectorFeature] = []
         for feature in layer.features:
             if feature.geometry_type != "LineString":
@@ -349,11 +366,49 @@ class ClassicVectorizationEngine(VectorizationEngine):
                     properties={**dict(feature.properties), "validated": True},
                 )
             )
+
+        if close_contours:
+            polygon_features = []
+            line_features = []
+            for feature in cleaned:
+                if feature.geometry_type == "LineString" and len(feature.coordinates) >= 3:
+                    closed = close_contour_to_polygon(feature.coordinates, max_gap=2.0)
+                    if closed is not None:
+                        polygon_features.append(
+                            VectorFeature(
+                                geometry_type="Polygon",
+                                coordinates=closed,
+                                properties=dict(feature.properties),
+                            )
+                        )
+                        continue
+                line_features.append(feature)
+            cleaned = polygon_features + line_features
+
+        junction_count = 0
+        if extract_topology and cleaned:
+            junctions = find_junctions(cleaned, snap_tolerance=tolerance)
+            junction_count = len(junctions)
+            annotated: list[VectorFeature] = []
+            for idx, feature in enumerate(cleaned):
+                connected_at = 0
+                for junc_coord, feature_indices in junctions.items():
+                    if idx in feature_indices:
+                        connected_at += 1
+                annotated.append(
+                    VectorFeature(
+                        geometry_type=feature.geometry_type,
+                        coordinates=feature.coordinates,
+                        properties={**dict(feature.properties), "junction_connections": connected_at},
+                    )
+                )
+            cleaned = annotated
+
         return VectorLayer(
             features=cleaned,
             name=layer.name,
             crs=layer.crs,
-            metadata={**layer.metadata, "postprocess": "line-cleanup"},
+            metadata={**layer.metadata, "postprocess": "line-cleanup", "junction_count": junction_count},
         )
 
     # ------------------------------------------------------------------

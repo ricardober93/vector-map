@@ -323,7 +323,7 @@ class RasterFrameLoadTests(unittest.TestCase):
         self.assertEqual(options.memory_policy, "strict")
 
     def test_load_options_accepts_known_memory_policies(self) -> None:
-        for policy in ("strict", "expert-override", "regional-tiles"):
+        for policy in ("strict", "expert-override", "regional-tiles", "tiled"):
             options = RasterFrame.LoadOptions.from_parameters(
                 {"memory_policy": policy},
                 profile_mode="regional",

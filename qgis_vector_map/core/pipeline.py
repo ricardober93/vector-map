@@ -21,6 +21,7 @@ from .models import (
     VectorizationRequest,
     VectorLayer,
 )
+from .geometry import apply_geotransform
 from .raster import RasterFrame
 
 
@@ -174,20 +175,15 @@ class PipelineOrchestrator:
             )
 
             if exceeds:
-                if profile.mode == "regional":
-                    policy = "regional-tiles"
+                policy = "regional-tiles" if profile.mode == "regional" else "tiled"
+                warnings.append(
+                    f"Auto mode: tiled execution activated "
+                    f"({pixels:,} px exceeds {threshold:,} threshold)."
+                )
+                if profile.mode != "regional":
                     warnings.append(
-                        f"Auto mode: tiled execution activated "
-                        f"({pixels:,} px exceeds {threshold:,} threshold)."
-                    )
-                else:
-                    raise ConfigurationError(
-                        f"Auto mode: raster exceeds memory threshold "
-                        f"({pixels:,} px > {threshold:,}) "
-                        f"but tiled execution is only supported for the regional profile. "
-                        f"Current profile: {profile.mode}. "
-                        f"Switch to 'regional-high-precision' profile "
-                        f"to enable tiled processing for large rasters."
+                        "Tiled execution for non-regional profiles: "
+                        "line features at tile boundaries may be split."
                     )
             else:
                 policy = "strict"
@@ -196,7 +192,7 @@ class PipelineOrchestrator:
                 source=request.source,
                 max_pixels=raster_load_options.max_pixels,
             )
-            if exceeds and profile.mode == "regional":
+            if exceeds:
                 warnings.append(
                     f"Strict mode: raster exceeds auto-detection threshold "
                     f"({pixels:,} > {threshold:,} px). "
@@ -205,11 +201,12 @@ class PipelineOrchestrator:
                 )
             policy = "strict"
         elif execution_mode == "tiled":
+            policy = "regional-tiles" if profile.mode == "regional" else "tiled"
             if profile.mode != "regional":
-                raise ConfigurationError(
-                    "Tiled execution mode is only supported for regional profile."
+                warnings.append(
+                    "Tiled execution for non-regional profiles: "
+                    "line features at tile boundaries may be split."
                 )
-            policy = "regional-tiles"
         else:
             raise ConfigurationError(
                 f"Invalid execution_mode: {execution_mode}. Must be one of: auto, strict, tiled."
@@ -243,6 +240,29 @@ class PipelineOrchestrator:
             ]
         return coordinates
 
+    def _apply_geotransform_to_layer(
+        self, layer: VectorLayer, geotransform: tuple[float, ...] | None
+    ) -> VectorLayer:
+        if geotransform is None or len(geotransform) < 6:
+            return layer
+        transformed_features = [
+            VectorFeature(
+                geometry_type=feature.geometry_type,
+                coordinates=apply_geotransform(
+                    feature.geometry_type, feature.coordinates, geotransform
+                ),
+                properties=feature.properties,
+            )
+            for feature in layer.features
+        ]
+        return VectorLayer(
+            features=transformed_features,
+            name=layer.name,
+            crs=layer.crs,
+            geotransform=geotransform,
+            metadata=layer.metadata,
+        )
+
     def _to_grayscale(self, channels: list[int]) -> int:
         if len(channels) == 1:
             value = channels[0]
@@ -272,7 +292,7 @@ class PipelineOrchestrator:
         grayscale_array = RasterFrame._window_to_grayscale_ndarray(window, x_size, y_size)
         tile_metadata = {
             **source_metadata,
-            "load_strategy": "gdal-regional-tiles",
+            "load_strategy": "gdal-tiles",
             "tile_origin": [x_off, y_off],
             "tile_size": [x_size, y_size],
         }
@@ -340,6 +360,19 @@ class PipelineOrchestrator:
             progress_callback=progress_callback,
             cancel_callback=cancel_callback,
         )
+
+        geotransform = raster.metadata.get("geotransform")
+        if geotransform is not None:
+            layer = context.artifacts["vector_layer"]
+            if isinstance(layer, VectorLayer):
+                transformed = self._apply_geotransform_to_layer(layer, tuple(geotransform))
+                context.store_artifact("vector_layer", transformed)
+        else:
+            context.add_warning(
+                "No geotransform found in raster metadata; "
+                "output coordinates will be in pixel space."
+            )
+
         context = self._run_stage(
             context=context,
             engine=engine,
@@ -361,7 +394,7 @@ class PipelineOrchestrator:
             warnings=list(context.warnings),
         )
 
-    def _run_regional_tiled_pipeline(
+    def _run_tiled_pipeline(
         self,
         *,
         request: VectorizationRequest,
@@ -372,13 +405,16 @@ class PipelineOrchestrator:
         cancel_callback: CancelCallback | None,
         warnings: list[str],
     ) -> PipelineResult:
-        if profile.mode != "regional":
-            raise ConfigurationError(
-                "memory_policy='regional-tiles' is only supported for regional profile mode."
+        is_regional = profile.mode == "regional"
+        load_strategy = "regional-tiles" if is_regional else "tiled"
+        if not is_regional:
+            warnings.append(
+                "Tiled execution for non-regional profiles: "
+                "line features at tile boundaries may be split."
             )
         if not isinstance(request.source, (str, Path)):
             raise ConfigurationError(
-                "memory_policy='regional-tiles' requires a raster path source."
+                "memory_policy='tiled' requires a raster path source."
             )
         source_path = Path(request.source)
         if not source_path.exists():
@@ -387,7 +423,7 @@ class PipelineOrchestrator:
             from osgeo import gdal  # type: ignore
         except Exception as exc:
             raise DependencyError(
-                "memory_policy='regional-tiles' requires GDAL (osgeo)."
+                "memory_policy='tiled' requires GDAL (osgeo)."
             ) from exc
 
         dataset = gdal.Open(str(source_path))
@@ -403,7 +439,7 @@ class PipelineOrchestrator:
             )
         tile_size = int(profile.parameter("tile_size", profile.parameter("chunk_size", 2048)))
         if tile_size <= 0:
-            raise ConfigurationError("Invalid tile_size for regional-tiles mode. Expected > 0.")
+            raise ConfigurationError("Invalid tile_size for tiled mode. Expected > 0.")
 
         projection = dataset.GetProjection()
         geotransform = dataset.GetGeoTransform(can_return_null=True)
@@ -426,7 +462,7 @@ class PipelineOrchestrator:
             raster=RasterFrame.from_matrix(
                 [[0]],
                 source_name=source_path.name,
-                metadata={**source_metadata, "load_strategy": "gdal-regional-tiles"},
+                metadata={**source_metadata, "load_strategy": load_strategy},
             ),
             working_directory=self._build_working_directory(request),
             metadata=self._build_base_metadata(
@@ -450,7 +486,7 @@ class PipelineOrchestrator:
         def _preprocess_tiled(tile_context: PipelineContext) -> PipelineContext:
             tile_context.store_artifact("tile_plan", tile_plan)
             tile_context.metadata["preprocess"] = {
-                "mode": "regional-tiles",
+                "mode": load_strategy,
                 "tile_count": len(tile_plan),
                 "tile_size": tile_size,
             }
@@ -536,10 +572,10 @@ class PipelineOrchestrator:
                 name=request.layer_name,
                 crs=str(source_metadata.get("crs_wkt")) if source_metadata.get("crs_wkt") else None,
                 metadata={
-                    "profile": "regional-high-precision",
+                    "profile": profile.profile_id,
                     "parameters": dict(profile.parameters),
                     "source": source_path.name,
-                    "load_strategy": "regional-tiles",
+                    "load_strategy": load_strategy,
                     "tile_size": tile_size,
                     "tile_count": len(tile_plan),
                 },
@@ -579,6 +615,21 @@ class PipelineOrchestrator:
             progress_callback=progress_callback,
             cancel_callback=cancel_callback,
         )
+
+        raster_geotransform = context.raster.metadata.get("geotransform")
+        if raster_geotransform is not None:
+            layer = context.artifacts["vector_layer"]
+            if isinstance(layer, VectorLayer):
+                transformed = self._apply_geotransform_to_layer(
+                    layer, tuple(raster_geotransform)
+                )
+                context.store_artifact("vector_layer", transformed)
+        else:
+            context.add_warning(
+                "No geotransform found in raster metadata; "
+                "output coordinates will be in pixel space."
+            )
+
         context = self._run_stage(
             context=context,
             engine=engine,
@@ -618,8 +669,8 @@ class PipelineOrchestrator:
             raster_load_options=raster_load_options,
             profile=profile,
         )
-        if memory_policy == "regional-tiles":
-            return self._run_regional_tiled_pipeline(
+        if memory_policy in ("regional-tiles", "tiled"):
+            return self._run_tiled_pipeline(
                 request=request,
                 profile=profile,
                 engine=engine,

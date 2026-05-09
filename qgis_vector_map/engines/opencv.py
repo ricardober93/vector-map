@@ -7,7 +7,8 @@ from typing import Any, Iterator
 
 from ..core.errors import DependencyError
 from ..core.export import export_vector_layer
-from ..core.models import PipelineContext, ProgressCallback, VectorFeature, VectorLayer
+from ..core.geometry import validate_polygon_rings, repair_polygon_coordinates, snap_coordinates_to_grid, find_junctions, close_contour_to_polygon
+from ..core.models import PipelineContext, ProgressCallback, StageName, VectorFeature, VectorLayer
 from ..core.raster import RasterFrame
 from .base import VectorizationEngine
 
@@ -177,11 +178,12 @@ class OpenCVVectorizationEngine(VectorizationEngine):
         max_colors = int(parameters.get("max_colors", 8))
         smoothing_radius = int(parameters.get("smoothing_radius", 0))
 
-        # K-means quantization
+        kmeans_attempts = int(parameters.get("kmeans_attempts", 10))
+        kmeans_eps = float(parameters.get("kmeans_eps", 0.01))
         data = gray.reshape((-1, 1)).astype(np.float32)
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, kmeans_eps)
         _, labels, centers = cv2.kmeans(
-            data, max_colors, None, criteria, 3, cv2.KMEANS_RANDOM_CENTERS
+            data, max_colors, None, criteria, kmeans_attempts, cv2.KMEANS_PP_CENTERS
         )
         label_map = labels.reshape(gray.shape).astype(np.uint8)
 
@@ -223,7 +225,7 @@ class OpenCVVectorizationEngine(VectorizationEngine):
             progress_idx += 1
             if progress_cb:
                 progress_cb(
-                    __import__("qgis_vector_map.core.models", fromlist=["StageName"]).StageName.VECTORIZE,
+                    StageName.VECTORIZE,
                     progress_idx / max(1, total_labels),
                     f"Processing region {progress_idx}/{total_labels}",
                 )
@@ -380,13 +382,20 @@ class OpenCVVectorizationEngine(VectorizationEngine):
             for ring in feature.coordinates:
                 if len(ring) < 4:
                     continue
-                # Compute area using shoelace
                 area = _polygon_area_shoelace(ring)
                 if abs(area) < min_area:
                     continue
                 rings.append(ring)
+
+            rings = repair_polygon_coordinates(rings)
+            snap_grid_size = float(parameters.get("snap_grid_size", 0.0))
+            if snap_grid_size > 0:
+                rings = snap_coordinates_to_grid(rings, "Polygon", snap_grid_size)
             if not rings:
                 continue
+
+            issues = validate_polygon_rings(rings)
+
             cleaned.append(
                 VectorFeature(
                     geometry_type="Polygon",
@@ -437,7 +446,7 @@ class OpenCVVectorizationEngine(VectorizationEngine):
         for idx, contour in enumerate(contours):
             if progress_cb and idx % 100 == 0:
                 progress_cb(
-                    __import__("qgis_vector_map.core.models", fromlist=["StageName"]).StageName.VECTORIZE,
+                    StageName.VECTORIZE,
                     idx / max(1, len(contours)),
                     f"Tracing edge contour {idx}/{len(contours)}",
                 )
@@ -473,6 +482,9 @@ class OpenCVVectorizationEngine(VectorizationEngine):
     def _postprocess_lines(self, layer: VectorLayer, parameters: dict[str, Any]) -> VectorLayer:
         tolerance = float(parameters.get("simplify_tolerance", 0.5))
         min_line_length = int(parameters.get("min_line_length", 2))
+        extract_topology = bool(parameters.get("extract_topology", False))
+        close_contours = bool(parameters.get("close_contours", False))
+
         cleaned: list[VectorFeature] = []
         for feature in layer.features:
             if feature.geometry_type != "LineString":
@@ -487,11 +499,49 @@ class OpenCVVectorizationEngine(VectorizationEngine):
                     properties={**dict(feature.properties), "validated": True},
                 )
             )
+
+        if close_contours:
+            polygon_features = []
+            line_features = []
+            for feature in cleaned:
+                if feature.geometry_type == "LineString" and len(feature.coordinates) >= 3:
+                    closed = close_contour_to_polygon(feature.coordinates, max_gap=2.0)
+                    if closed is not None:
+                        polygon_features.append(
+                            VectorFeature(
+                                geometry_type="Polygon",
+                                coordinates=closed,
+                                properties=dict(feature.properties),
+                            )
+                        )
+                        continue
+                line_features.append(feature)
+            cleaned = polygon_features + line_features
+
+        junction_count = 0
+        if extract_topology and cleaned:
+            junctions = find_junctions(cleaned, snap_tolerance=tolerance)
+            junction_count = len(junctions)
+            annotated: list[VectorFeature] = []
+            for idx, feature in enumerate(cleaned):
+                connected_at = 0
+                for junc_coord, feature_indices in junctions.items():
+                    if idx in feature_indices:
+                        connected_at += 1
+                annotated.append(
+                    VectorFeature(
+                        geometry_type=feature.geometry_type,
+                        coordinates=feature.coordinates,
+                        properties={**dict(feature.properties), "junction_connections": connected_at},
+                    )
+                )
+            cleaned = annotated
+
         return VectorLayer(
             features=cleaned,
             name=layer.name,
             crs=layer.crs,
-            metadata={**layer.metadata, "postprocess": "line-cleanup"},
+            metadata={**layer.metadata, "postprocess": "line-cleanup", "junction_count": junction_count},
         )
 
     # ------------------------------------------------------------------
@@ -501,17 +551,15 @@ class OpenCVVectorizationEngine(VectorizationEngine):
         self, gray: np.ndarray, parameters: dict[str, Any]
     ) -> _CVPreprocessedPayload:
         threshold = parameters.get("foreground_threshold")
-        if threshold is None:
-            threshold, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        else:
-            _, binary = cv2.threshold(gray, int(threshold), 255, cv2.THRESH_BINARY)
-            binary = binary  # noqa: B018
-
         polarity = str(parameters.get("foreground_polarity", "dark"))
-        if polarity == "dark":
-            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        if threshold is None:
+            if polarity == "dark":
+                _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            else:
+                _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         else:
-            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            thresh_type = cv2.THRESH_BINARY_INV if polarity == "dark" else cv2.THRESH_BINARY
+            _, binary = cv2.threshold(gray, int(threshold), 255, thresh_type)
 
         open_radius = int(parameters.get("open_radius", 1))
         close_radius = int(parameters.get("close_radius", 1))
@@ -574,7 +622,7 @@ class OpenCVVectorizationEngine(VectorizationEngine):
         for idx, contour in enumerate(contours):
             if progress_cb and idx % 100 == 0:
                 progress_cb(
-                    __import__("qgis_vector_map.core.models", fromlist=["StageName"]).StageName.VECTORIZE,
+                    StageName.VECTORIZE,
                     idx / max(1, len(contours)),
                     f"Tracing linear contour {idx}/{len(contours)}",
                 )

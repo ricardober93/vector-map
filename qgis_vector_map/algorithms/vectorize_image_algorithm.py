@@ -12,15 +12,26 @@ from ..core.models import VectorizationRequest
 from ..core.pipeline import run_vectorization
 
 _QCoreApplication: Any
+_QgsCoordinateReferenceSystem: Any
+_QgsFeature: Any
+_QgsFeatureSink: Any
+_QgsField: Any
+_QgsFields: Any
+_QgsGeometry: Any
+_QgsPointXY: Any
 _QgsProcessingAlgorithm: Any
 _QgsProcessingException: Any
 _QgsProcessingParameterEnum: Any
 _QgsProcessingParameterRasterLayer: Any
 _QgsProcessingParameterString: Any
 _QgsProcessingParameterVectorDestination: Any
+_QgsProject: Any
+_QgsWkbTypes: Any
+_QtVariantType: Any
 
 try:  # pragma: no cover - available in local dev and QGIS runtimes
     from PyQt5.QtCore import QCoreApplication as _QCoreApplication
+    from PyQt5.QtCore import QVariant as _QtVariantType
 except Exception:  # pragma: no cover - import-safe fallback
 
     class _FallbackQCoreApplication:
@@ -29,8 +40,30 @@ except Exception:  # pragma: no cover - import-safe fallback
             return message
 
     _QCoreApplication = _FallbackQCoreApplication
+    _QtVariantType = str
 
 try:  # pragma: no cover - optional QGIS dependency
+    from qgis.core import (
+        QgsCoordinateReferenceSystem as _QgsCoordinateReferenceSystem,
+    )
+    from qgis.core import (
+        QgsFeature as _QgsFeature,
+    )
+    from qgis.core import (
+        QgsFeatureSink as _QgsFeatureSink,
+    )
+    from qgis.core import (
+        QgsField as _QgsField,
+    )
+    from qgis.core import (
+        QgsFields as _QgsFields,
+    )
+    from qgis.core import (
+        QgsGeometry as _QgsGeometry,
+    )
+    from qgis.core import (
+        QgsPointXY as _QgsPointXY,
+    )
     from qgis.core import (
         QgsProcessingAlgorithm as _QgsProcessingAlgorithm,
     )
@@ -49,6 +82,12 @@ try:  # pragma: no cover - optional QGIS dependency
     from qgis.core import (
         QgsProcessingParameterVectorDestination as _QgsProcessingParameterVectorDestination,
     )
+    from qgis.core import (
+        QgsProject as _QgsProject,
+    )
+    from qgis.core import (
+        QgsWkbTypes as _QgsWkbTypes,
+    )
 
     HAS_QGIS = True
 except Exception:  # pragma: no cover - allow imports without QGIS
@@ -66,6 +105,27 @@ except Exception:  # pragma: no cover - allow imports without QGIS
         def tr(self, message: str) -> str:
             return message
 
+    class _FallbackQgsCoordinateReferenceSystem:
+        pass
+
+    class _FallbackQgsFeature:
+        pass
+
+    class _FallbackQgsFeatureSink:
+        pass
+
+    class _FallbackQgsField:
+        pass
+
+    class _FallbackQgsFields:
+        pass
+
+    class _FallbackQgsGeometry:
+        pass
+
+    class _FallbackQgsPointXY:
+        pass
+
     class _FallbackQgsProcessingParameterEnum(_StubParameter):
         pass
 
@@ -78,20 +138,133 @@ except Exception:  # pragma: no cover - allow imports without QGIS
     class _FallbackQgsProcessingParameterString(_StubParameter):
         pass
 
+    class _FallbackQgsProject:
+        @classmethod
+        def instance(cls):
+            return cls()
+
+        def crs(self):
+            return None
+
+    class _FallbackQgsWkbTypes:
+        Unknown = 0
+        Point = 1
+        LineString = 2
+        Polygon = 3
+        MultiPoint = 4
+        MultiLineString = 5
+        MultiPolygon = 6
+
+    _QgsCoordinateReferenceSystem = _FallbackQgsCoordinateReferenceSystem
+    _QgsFeature = _FallbackQgsFeature
+    _QgsFeatureSink = _FallbackQgsFeatureSink
+    _QgsField = _FallbackQgsField
+    _QgsFields = _FallbackQgsFields
+    _QgsGeometry = _FallbackQgsGeometry
+    _QgsPointXY = _FallbackQgsPointXY
     _QgsProcessingAlgorithm = _FallbackQgsProcessingAlgorithm
     _QgsProcessingException = _FallbackQgsProcessingException
     _QgsProcessingParameterEnum = _FallbackQgsProcessingParameterEnum
     _QgsProcessingParameterRasterLayer = _FallbackQgsProcessingParameterRasterLayer
     _QgsProcessingParameterString = _FallbackQgsProcessingParameterString
     _QgsProcessingParameterVectorDestination = _FallbackQgsProcessingParameterVectorDestination
+    _QgsProject = _FallbackQgsProject
+    _QgsWkbTypes = _FallbackQgsWkbTypes
 
 QCoreApplication = cast(Any, _QCoreApplication)
+QgsCoordinateReferenceSystem = cast(type[Any], _QgsCoordinateReferenceSystem)
+QgsFeature = cast(type[Any], _QgsFeature)
+QgsFeatureSink = cast(type[Any], _QgsFeatureSink)
+QgsField = cast(type[Any], _QgsField)
+QgsFields = cast(type[Any], _QgsFields)
+QgsGeometry = cast(type[Any], _QgsGeometry)
+QgsPointXY = cast(type[Any], _QgsPointXY)
 QgsProcessingAlgorithm = cast(type[Any], _QgsProcessingAlgorithm)
 QgsProcessingException = cast(type[Exception], _QgsProcessingException)
 QgsProcessingParameterEnum = cast(type[Any], _QgsProcessingParameterEnum)
 QgsProcessingParameterRasterLayer = cast(type[Any], _QgsProcessingParameterRasterLayer)
 QgsProcessingParameterString = cast(type[Any], _QgsProcessingParameterString)
 QgsProcessingParameterVectorDestination = cast(type[Any], _QgsProcessingParameterVectorDestination)
+QgsProject = cast(type[Any], _QgsProject)
+QgsWkbTypes = cast(type[Any], _QgsWkbTypes)
+QtVariantType = cast(type[Any], _QtVariantType)
+
+_GEOMETRY_TYPE_MAP = {
+    "Point": "Point",
+    "MultiPoint": "MultiPoint",
+    "LineString": "LineString",
+    "MultiLineString": "MultiLineString",
+    "Polygon": "Polygon",
+    "MultiPolygon": "MultiPolygon",
+}
+
+_WKB_TYPE_MAP = {
+    "Point": QgsWkbTypes.Point,
+    "MultiPoint": QgsWkbTypes.MultiPoint,
+    "LineString": QgsWkbTypes.LineString,
+    "MultiLineString": QgsWkbTypes.MultiLineString,
+    "Polygon": QgsWkbTypes.Polygon,
+    "MultiPolygon": QgsWkbTypes.MultiPolygon,
+}
+
+
+def _resolve_qgs_geometry_type(geometry_types: set[str]) -> Any:
+    priority = ["Polygon", "MultiPolygon", "LineString", "MultiLineString", "Point", "MultiPoint"]
+    for gt in priority:
+        if gt in geometry_types:
+            return _WKB_TYPE_MAP.get(gt, QgsWkbTypes.Unknown)
+    return QgsWkbTypes.Unknown
+
+
+def _build_qgs_geometry(geometry_type: str, coordinates: Any) -> Any:
+    if geometry_type == "Point":
+        return QgsGeometry.fromPointXY(QgsPointXY(coordinates[0], coordinates[1]))
+
+    if geometry_type in {"LineString", "MultiPoint"}:
+        points = [QgsPointXY(pt[0], pt[1]) for pt in coordinates]
+        return QgsGeometry.fromPolylineXY(points)
+
+    if geometry_type == "Polygon":
+        rings = [[QgsPointXY(pt[0], pt[1]) for pt in ring] for ring in coordinates]
+        return QgsGeometry.fromPolygonXY(rings)
+
+    if geometry_type == "MultiLineString":
+        lines = [[QgsPointXY(pt[0], pt[1]) for pt in line] for line in coordinates]
+        return QgsGeometry.fromMultiPolylineXY(lines)
+
+    if geometry_type == "MultiPolygon":
+        polygons = [
+            [[QgsPointXY(pt[0], pt[1]) for pt in ring] for ring in polygon]
+            for polygon in coordinates
+        ]
+        return QgsGeometry.fromMultiPolygonXY(polygons)
+
+    return QgsGeometry()
+
+
+def _write_features_to_sink(
+    sink: Any,
+    fields: Any,
+    vector_layer: Any,
+    crs: Any,
+    feedback: Any,
+) -> None:
+    for idx, feature in enumerate(vector_layer.features):
+        qgs_geom = _build_qgs_geometry(feature.geometry_type, feature.coordinates)
+        if qgs_geom is None or qgs_geom.isNull():
+            feedback.pushWarning(f"Skipping feature {idx}: could not build geometry")
+            continue
+        qgs_feature = QgsFeature(fields)
+        qgs_feature.setGeometry(qgs_geom)
+        props = dict(feature.properties)
+        for field in fields:
+            field_name = field.name()
+            if field_name in props:
+                qgs_feature.setAttribute(field_name, str(props[field_name]))
+            else:
+                qgs_feature.setAttribute(field_name, None)
+        if not sink.addFeature(qgs_feature):
+            feedback.pushWarning(f"Failed to write feature {idx} to output layer")
 
 
 class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
@@ -100,6 +273,9 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
     INPUT = "INPUT"
     PROFILE = "PROFILE"
     EXECUTION_MODE = "EXECUTION_MODE"
+    EDGE_CANNY_LOW = "EDGE_CANNY_LOW"
+    EDGE_CANNY_HIGH = "EDGE_CANNY_HIGH"
+    EDGE_BLUR = "EDGE_BLUR"
     OUTPUT = "OUTPUT"
     OUTPUT_FORMAT = "OUTPUT_FORMAT"
     PARAMETERS = "PARAMETERS"
@@ -162,6 +338,30 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
             )
         )
         self.addParameter(
+            _QgsProcessingParameterString(
+                self.EDGE_CANNY_LOW,
+                self._tr("Edge Canny low threshold"),
+                defaultValue="50",
+                multiLine=False,
+            )
+        )
+        self.addParameter(
+            _QgsProcessingParameterString(
+                self.EDGE_CANNY_HIGH,
+                self._tr("Edge Canny high threshold"),
+                defaultValue="150",
+                multiLine=False,
+            )
+        )
+        self.addParameter(
+            _QgsProcessingParameterString(
+                self.EDGE_BLUR,
+                self._tr("Edge blur kernel size"),
+                defaultValue="3",
+                multiLine=False,
+            )
+        )
+        self.addParameter(
             QgsProcessingParameterString(
                 self.PARAMETERS,
                 self._tr("Profile parameters (JSON)"),
@@ -219,12 +419,7 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
         return execution_mode_options[mode_index]
 
     def _validate_execution_mode_for_profile(self, execution_mode: str, profile_id: str) -> None:
-        if execution_mode == "tiled":
-            if profile_id != "regional-high-precision":
-                raise _QgsProcessingException(
-                    "Tiled execution mode is only supported for the regional profile. "
-                    f"Current profile: {profile_id}."
-                )
+        pass
 
     def processAlgorithm(
         self, parameters: dict[str, Any], context: Any, feedback: Any
@@ -254,13 +449,20 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
         execution_mode = self._resolve_execution_mode_parameter(parameters, context)
         self._validate_execution_mode_for_profile(execution_mode, profile_id)
         raw_parameters = self.parameterAsString(parameters, self.PARAMETERS, context)
-        output_destination = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
-        if not output_destination:
-            raise QgsProcessingException("Output destination is required.")
 
         layer_name = self.parameterAsString(parameters, self.LAYER_NAME, context) or "vectorized"
         output_format = self.parameterAsString(parameters, self.OUTPUT_FORMAT, context) or "auto"
         profile_parameters = self._parse_parameters(raw_parameters)
+
+        canny_low = self.parameterAsString(parameters, self.EDGE_CANNY_LOW, context)
+        if canny_low:
+            profile_parameters["edge_canny_low"] = canny_low
+        canny_high = self.parameterAsString(parameters, self.EDGE_CANNY_HIGH, context)
+        if canny_high:
+            profile_parameters["edge_canny_high"] = canny_high
+        edge_blur = self.parameterAsString(parameters, self.EDGE_BLUR, context)
+        if edge_blur:
+            profile_parameters["edge_blur"] = edge_blur
 
         engine_options = ["auto", "classic", "opencv"]
         engine_index = self.parameterAsEnum(parameters, self.ENGINE, context)
@@ -268,6 +470,29 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
             engine_name = engine_options[engine_index]
             if engine_name != "auto":
                 profile_parameters["engine_name"] = f"{engine_name}-local"
+
+        raster_crs = raster_layer.crs()
+        crs_is_valid = raster_crs is not None and raster_crs.isValid()
+        if not crs_is_valid:
+            fallback_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+            project_crs = None
+            try:
+                project = QgsProject.instance()
+                if project is not None:
+                    project_crs_obj = project.crs()
+                    if project_crs_obj is not None and project_crs_obj.isValid():
+                        fallback_crs = project_crs_obj
+            except Exception:
+                pass
+            raster_crs = fallback_crs
+            feedback.pushWarning(
+                "Input raster has no CRS defined. Using "
+                f"{fallback_crs.authid()} as fallback."
+            )
+
+        output_destination = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
+        if not output_destination:
+            raise QgsProcessingException("Output destination is required.")
 
         output_path = Path(output_destination)
         inferred_format = output_format
@@ -278,8 +503,6 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
             elif suffix in {".geojson", ".json"}:
                 inferred_format = "geojson"
 
-        # QGIS may pass a provider URI like memory: as destination; in that case
-        # run pipeline to a temporary file and let Processing pick it from result.
         if ":" in output_destination and not output_destination.startswith("/"):
             temp_extension = ".gpkg" if inferred_format == "gpkg" else ".geojson"
             output_path = Path(tempfile.gettempdir()) / f"vector_map_{profile_id}{temp_extension}"
@@ -308,10 +531,38 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
         except VectorMapError as exc:
             raise _QgsProcessingException(str(exc)) from exc
 
+        vector_layer = result.vector_layer
+        if vector_layer.feature_count() == 0:
+            feedback.pushWarning("Vectorization produced no features.")
+
+        geometry_types = {f.geometry_type for f in vector_layer.features}
+        wkb_type = _resolve_qgs_geometry_type(geometry_types)
+
+        fields = QgsFields()
+        field_names = sorted(
+            {str(key) for f in vector_layer.features for key in f.properties.keys()}
+        )
+        for field_name in field_names:
+            fields.append(QgsField(field_name, QtVariantType.String))
+
+        (sink, dest_id) = self.parameterAsSink(
+            parameters,
+            self.OUTPUT,
+            context,
+            fields,
+            wkb_type,
+            raster_crs,
+            layer_name,
+        )
+        if sink is None:
+            raise QgsProcessingException("Could not create output layer sink.")
+
+        _write_features_to_sink(sink, fields, vector_layer, raster_crs, feedback)
+
         return {
-            self.OUTPUT: str(result.output_path),
+            self.OUTPUT: dest_id,
             self.PROFILE: result.profile_id,
-            self.LAYER_NAME: result.vector_layer.name,
+            self.LAYER_NAME: vector_layer.name,
             self.PARAMETERS: json.dumps(
                 result.metadata.get("requested_parameters", {}), sort_keys=True
             ),

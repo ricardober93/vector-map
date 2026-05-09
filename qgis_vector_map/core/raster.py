@@ -66,7 +66,7 @@ def _coerce_memory_policy(value: Any, *, default: str = DEFAULT_MEMORY_POLICY) -
     if value is None:
         return default
     policy = str(value).strip().lower()
-    allowed = {"strict", "expert-override", "regional-tiles"}
+    allowed = {"strict", "expert-override", "regional-tiles", "tiled"}
     if policy not in allowed:
         allowed_values = ", ".join(sorted(allowed))
         raise ConfigurationError(

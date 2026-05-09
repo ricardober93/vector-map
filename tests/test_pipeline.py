@@ -339,7 +339,7 @@ class ExecutionModeResolutionTests(unittest.TestCase):
         self.assertEqual(policy, "regional-tiles")
         self.assertTrue(any("tiled execution activated" in w for w in warnings))
 
-    def test_auto_edge_above_threshold_raises_configuration_error(self) -> None:
+    def test_auto_edge_above_threshold_returns_tiled(self) -> None:
         orch = self._make_orchestrator()
         source_path = Path("/tmp/huge_raster.tif")
         request = VectorizationRequest(
@@ -352,15 +352,13 @@ class ExecutionModeResolutionTests(unittest.TestCase):
         profile = self._make_profile(mode="edge")
         threshold_result = (True, 7_429_106_145, 375_000_000)
         with patch.object(orch, "_check_auto_threshold", return_value=threshold_result):
-            with self.assertRaises(ConfigurationError) as caught:
-                orch._resolve_execution_mode(
-                    request=request, raster_load_options=options, profile=profile
-                )
-        msg = str(caught.exception)
-        self.assertIn("tiled execution is only supported for the regional profile", msg)
-        self.assertIn("edge", msg)
+            policy, warnings = orch._resolve_execution_mode(
+                request=request, raster_load_options=options, profile=profile
+            )
+        self.assertEqual(policy, "tiled")
+        self.assertTrue(any("tiled execution activated" in w for w in warnings))
 
-    def test_auto_linear_above_threshold_raises_configuration_error(self) -> None:
+    def test_auto_linear_above_threshold_returns_tiled(self) -> None:
         orch = self._make_orchestrator()
         source_path = Path("/tmp/huge_raster.tif")
         request = VectorizationRequest(
@@ -373,13 +371,11 @@ class ExecutionModeResolutionTests(unittest.TestCase):
         profile = self._make_profile(mode="linear")
         threshold_result = (True, 7_429_106_145, 375_000_000)
         with patch.object(orch, "_check_auto_threshold", return_value=threshold_result):
-            with self.assertRaises(ConfigurationError) as caught:
-                orch._resolve_execution_mode(
-                    request=request, raster_load_options=options, profile=profile
-                )
-        msg = str(caught.exception)
-        self.assertIn("tiled execution is only supported for the regional profile", msg)
-        self.assertIn("linear", msg)
+            policy, warnings = orch._resolve_execution_mode(
+                request=request, raster_load_options=options, profile=profile
+            )
+        self.assertEqual(policy, "tiled")
+        self.assertTrue(any("tiled execution activated" in w for w in warnings))
 
     def test_strict_regional_above_threshold_warns(self) -> None:
         orch = self._make_orchestrator()
@@ -414,3 +410,35 @@ class ExecutionModeResolutionTests(unittest.TestCase):
             request=request, raster_load_options=options, profile=profile
         )
         self.assertEqual(policy, "regional-tiles")
+
+    def test_tiled_edge_returns_tiled_policy(self) -> None:
+        orch = self._make_orchestrator()
+        request = VectorizationRequest(
+            source=[[0, 1], [1, 0]],
+            profile_id="edge-high-precision",
+            output_path=Path("/tmp/out.geojson"),
+            execution_mode="tiled",
+        )
+        options = self._make_load_options(profile_mode="edge")
+        profile = self._make_profile(mode="edge")
+        policy, warnings = orch._resolve_execution_mode(
+            request=request, raster_load_options=options, profile=profile
+        )
+        self.assertEqual(policy, "tiled")
+        self.assertTrue(any("tile boundaries may be split" in w for w in warnings))
+
+    def test_tiled_linear_returns_tiled_policy(self) -> None:
+        orch = self._make_orchestrator()
+        request = VectorizationRequest(
+            source=[[0, 1], [1, 0]],
+            profile_id="linear-high-precision",
+            output_path=Path("/tmp/out.geojson"),
+            execution_mode="tiled",
+        )
+        options = self._make_load_options(profile_mode="linear")
+        profile = self._make_profile(mode="linear")
+        policy, warnings = orch._resolve_execution_mode(
+            request=request, raster_load_options=options, profile=profile
+        )
+        self.assertEqual(policy, "tiled")
+        self.assertTrue(any("tile boundaries may be split" in w for w in warnings))

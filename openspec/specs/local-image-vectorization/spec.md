@@ -22,15 +22,29 @@ El sistema SHALL ejecutar la vectorización usando etapas explícitas de preproc
 - **THEN** el sistema ejecuta preproceso, vectorización y postproceso en ese orden y registra el estado de cada etapa
 
 ### Requirement: Salida geoespacial válida para QGIS
-El sistema MUST generar una capa vectorial compatible con QGIS y SHALL garantizar geometrías válidas tras el postproceso.
+
+El sistema MUST generar una capa vectorial compatible con QGIS y SHALL garantizar geometrías válidas tras el postproceso. La capa de salida SHALL usar coordenadas georreferenciadas (no coordenadas pixel) y SHALL integrarse con el framework Processing de QGIS mediante QgsFeatureSink.
 
 #### Scenario: Exportación de capa utilizable
 - **WHEN** la vectorización finaliza exitosamente
-- **THEN** el sistema exporta un resultado vectorial que puede cargarse en QGIS sin errores críticos de geometría
+- **THEN** el sistema exporta una capa vectorial con coordenadas en el sistema de referencia del raster de entrada que puede cargarse en QGIS sin errores críticos de geometría
 
 #### Scenario: Corrección de geometrías inválidas
 - **WHEN** la etapa de vectorización produce geometrías inválidas
 - **THEN** el sistema ejecuta rutinas de corrección y solo publica salida marcada como válida
+
+#### Scenario: Coordenadas georreferenciadas en la capa de salida
+- **WHEN** el raster de entrada tiene un geotransform válido
+- **THEN** las coordenadas de los features en la capa de salida están en espacio mundo (coordenadas geográficas o proyectadas), no en espacio pixel
+
+### Requirement: Manejo de geometrías mixtas en exportación por archivo
+
+El sistema SHALL agrupar features por tipo de geometría al exportar a GeoPackage, creando sub-capas separadas para cada tipo.
+
+#### Scenario: Features Polygon y LineString en la misma capa
+- **WHEN** se exportan features de tipos mixtos a GeoPackage
+- **THEN** las features Polygon se exportan en una sub-capa y las features LineString en otra
+- **AND** no se pierden features de ningún tipo
 
 ### Requirement: Integración con Processing de QGIS
 El sistema SHALL exponer la capacidad de vectorización como algoritmo(s) en Processing para permitir uso en toolbox, modeler y batch.

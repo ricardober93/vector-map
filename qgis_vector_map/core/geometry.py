@@ -634,3 +634,268 @@ def trace_skeleton_paths(matrix: BinaryMatrix, *, min_length: int = 2) -> list[l
             paths.append([(x + 0.5, y + 0.5) for x, y in path])
 
     return [simplify_path(path, tolerance=0.0) for path in paths if len(path) >= min_length]
+
+
+def validate_polygon_rings(rings: list[list[list[float]]]) -> list[str]:
+    """Validate polygon rings and return a list of issues found.
+
+    Checks for: unclosed rings, self-intersections, insufficient points,
+    and incorrect winding order (exterior should be CCW, holes CW in GIS convention).
+    """
+    issues: list[str] = []
+    for ring_idx, ring in enumerate(rings):
+        if len(ring) < 4:
+            issues.append(f"Ring {ring_idx} has fewer than 4 points")
+            continue
+        if ring[0] != ring[-1]:
+            issues.append(f"Ring {ring_idx} is not closed")
+        if _ring_self_intersects(ring):
+            issues.append(f"Ring {ring_idx} has self-intersection")
+    return issues
+
+
+def _ring_self_intersects(ring: list[list[float]]) -> bool:
+    """Check if a ring has self-intersections using edge crossing test."""
+    n = len(ring) - 1
+    if n < 3:
+        return False
+    segments = []
+    for i in range(n):
+        p1 = ring[i]
+        p2 = ring[i + 1] if i + 1 < len(ring) else ring[0]
+        segments.append((p1, p2))
+
+    if _HAS_SHAPELY:
+        try:
+            coords = [(float(p[0]), float(p[1])) for p in ring[:n]]
+            poly = _ShapelyPolygon(coords)
+            return not poly.is_valid
+        except Exception:
+            pass
+
+    for i in range(len(segments)):
+        for j in range(i + 2, len(segments)):
+            if i == 0 and j == len(segments) - 1:
+                continue
+            if _segments_intersect(segments[i], segments[j]):
+                return True
+    return False
+
+
+def _segments_intersect(seg_a: tuple, seg_b: tuple) -> bool:
+    """Check if two line segments intersect (excluding shared endpoints)."""
+    (x1, y1), (x2, y2) = seg_a
+    (x3, y3), (x4, y4) = seg_b
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(denom) < 1e-12:
+        return False
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+    u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom
+    return 0 < t < 1 and 0 < u < 1
+
+
+def repair_polygon_coordinates(rings: list[list[list[float]]]) -> list[list[list[float]]]:
+    """Repair polygon rings by closing unclosed rings, removing duplicate points,
+    and fixing winding order (exterior CCW, holes CW).
+
+    Returns repaired rings. Rings with fewer than 3 unique points are dropped.
+    """
+    if not rings:
+        return []
+    repaired: list[list[list[float]]] = []
+    for ring_idx, ring in enumerate(rings):
+        if ring[0] != ring[-1]:
+            ring = ring + [ring[0]]
+        cleaned = [ring[0]]
+        for pt in ring[1:]:
+            if pt != cleaned[-1]:
+                cleaned.append(pt)
+        if cleaned[0] != cleaned[-1]:
+            cleaned.append(cleaned[0])
+        if len(cleaned) < 4:
+            continue
+        area = polygon_area([(float(p[0]), float(p[1])) for p in cleaned])
+        if ring_idx == 0 and area < 0:
+            cleaned = list(reversed(cleaned))
+        elif ring_idx > 0 and area > 0:
+            cleaned = list(reversed(cleaned))
+        repaired.append([[float(p[0]), float(p[1])] for p in cleaned])
+    return repaired
+
+
+def snap_coordinates_to_grid(
+    coordinates: Any, geometry_type: str, grid_size: float
+) -> Any:
+    """Snap coordinates to a regular grid to eliminate floating-point precision issues
+    and reduce gaps/overlaps between adjacent features.
+    
+    Each coordinate is rounded to the nearest multiple of grid_size:
+        snapped = round(coord / grid_size) * grid_size
+    
+    Args:
+        coordinates: Geometry coordinates in GeoJSON-compatible format
+        geometry_type: Type of geometry (Point, LineString, Polygon, etc.)
+        grid_size: Grid cell size for snapping. Must be > 0.
+    
+    Returns:
+        Coordinates with values snapped to the grid.
+    """
+    if grid_size <= 0:
+        return coordinates
+    
+    def _snap_point(pt: Any) -> list[float]:
+        return [round(float(pt[0]) / grid_size) * grid_size,
+                round(float(pt[1]) / grid_size) * grid_size]
+    
+    if geometry_type == "Point":
+        return _snap_point(coordinates)
+    
+    if geometry_type in {"LineString", "MultiPoint"}:
+        return [_snap_point(pt) for pt in coordinates]
+    
+    if geometry_type == "Polygon":
+        return [[_snap_point(pt) for pt in ring] for ring in coordinates]
+    
+    if geometry_type == "MultiLineString":
+        return [[_snap_point(pt) for pt in line] for line in coordinates]
+    
+    if geometry_type == "MultiPolygon":
+        return [
+            [[_snap_point(pt) for pt in ring] for ring in polygon]
+            for polygon in coordinates
+        ]
+    
+    return coordinates
+
+
+def find_line_endpoints(coordinates: list[list[float]]) -> tuple[list[float], list[float]]:
+    """Return the first and last point of a LineString coordinate list."""
+    return coordinates[0], coordinates[-1]
+
+
+def distance_between_points(p1: list[float], p2: list[float]) -> float:
+    """Euclidean distance between two 2D points."""
+    return ((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2) ** 0.5
+
+
+def find_junctions(
+    features: list, snap_tolerance: float = 1.0
+) -> dict[tuple[float, float], list[int]]:
+    """Find junction points where line endpoints meet or are within snap_tolerance.
+
+    Args:
+        features: List of VectorFeature objects with geometry_type "LineString"
+        snap_tolerance: Maximum distance to consider two endpoints as connected
+
+    Returns:
+        Dictionary mapping junction coordinate tuples to lists of feature indices
+    """
+    endpoint_map: dict[tuple[float, float], list[int]] = {}
+
+    for idx, feature in enumerate(features):
+        if feature.geometry_type not in ("LineString", "MultiLineString"):
+            continue
+        if feature.geometry_type == "LineString":
+            coords_list = [feature.coordinates]
+        else:
+            coords_list = feature.coordinates
+
+        for coords in coords_list:
+            if len(coords) < 2:
+                continue
+            start = coords[0]
+            end = coords[-1]
+            for pt in (start, end):
+                snapped_key = None
+                for existing_key in endpoint_map:
+                    if distance_between_points(list(existing_key), pt) <= snap_tolerance:
+                        snapped_key = existing_key
+                        break
+                if snapped_key is not None:
+                    if idx not in endpoint_map[snapped_key]:
+                        endpoint_map[snapped_key].append(idx)
+                else:
+                    key = (round(pt[0], 6), round(pt[1], 6))
+                    endpoint_map[key] = [idx]
+
+    return {k: v for k, v in endpoint_map.items() if len(v) >= 2}
+
+
+def close_contour_to_polygon(
+    coordinates: list[list[float]], max_gap: float = 2.0
+) -> list[list[list[float]]] | None:
+    """Attempt to close an open LineString contour into a Polygon ring.
+
+    If the distance between the first and last point is <= max_gap,
+    close the ring by appending the first point. If the gap is larger
+    than max_gap, return None (contour cannot be closed).
+
+    Args:
+        coordinates: LineString coordinates (list of [x, y] points)
+        max_gap: Maximum distance between start and end point to close.
+                 Set to float('inf') to always close.
+
+    Returns:
+        A list containing one closed ring (list of [x,y] points) suitable
+        for a Polygon coordinates format, or None if the gap exceeds max_gap.
+    """
+    if len(coordinates) < 3:
+        return None
+
+    start = coordinates[0]
+    end = coordinates[-1]
+
+    gap = distance_between_points(start, end) if (start[0] != end[0] or start[1] != end[1]) else 0.0
+
+    if gap > max_gap:
+        return None
+
+    ring = [list(pt) if isinstance(pt, (list, tuple)) else [pt[0], pt[1]] for pt in coordinates]
+    ring.append(list(ring[0]))
+
+    return [ring]
+
+
+def apply_geotransform(
+    geometry_type: str,
+    coordinates: Any,
+    geotransform: tuple[float, ...],
+) -> Any:
+    """Apply an affine geotransform to convert pixel coordinates to world coordinates.
+
+    The geotransform follows GDAL convention:
+        (origin_x, pixel_width, rotation_x, origin_y, rotation_y, pixel_height)
+    where:
+        x_world = origin_x + col * pixel_width + row * rotation_x
+        y_world = origin_y + col * rotation_y + row * pixel_height
+    """
+    if geotransform is None or len(geotransform) < 6:
+        return coordinates
+
+    origin_x, pixel_width, rot_x, origin_y, rot_y, pixel_height = geotransform[:6]
+
+    def _transform_point(pt: Any) -> list[float]:
+        col, row = float(pt[0]), float(pt[1])
+        x = origin_x + col * pixel_width + row * rot_x
+        y = origin_y + col * rot_y + row * pixel_height
+        return [x, y]
+
+    if geometry_type == "Point":
+        return _transform_point(coordinates)
+
+    if geometry_type in {"LineString", "MultiPoint"}:
+        return [_transform_point(pt) for pt in coordinates]
+
+    if geometry_type == "Polygon":
+        return [[_transform_point(pt) for pt in ring] for ring in coordinates]
+
+    if geometry_type == "MultiLineString":
+        return [[_transform_point(pt) for pt in line] for line in coordinates]
+
+    if geometry_type == "MultiPolygon":
+        return [
+            [[_transform_point(pt) for pt in ring] for ring in polygon]
+            for polygon in coordinates
+        ]
+
+    return coordinates

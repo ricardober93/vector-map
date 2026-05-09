@@ -91,6 +91,32 @@ def export_vector_layer(
     return export_geopackage(layer, resolved_path)
 
 
+def _ogr_geometry_type_for(feature_type: str, ogr_module: Any) -> int:
+    mapping = {
+        "Point": ogr_module.wkbPoint,
+        "MultiPoint": ogr_module.wkbMultiPoint,
+        "LineString": ogr_module.wkbLineString,
+        "MultiLineString": ogr_module.wkbMultiLineString,
+        "Polygon": ogr_module.wkbPolygon,
+        "MultiPolygon": ogr_module.wkbMultiPolygon,
+    }
+    return mapping.get(feature_type, ogr_module.wkbUnknown)
+
+
+def _group_features_by_type(
+    features: list[VectorFeature],
+) -> list[tuple[str, list[VectorFeature]]]:
+    groups: dict[str, list[VectorFeature]] = {}
+    order: list[str] = []
+    for feature in features:
+        gt = feature.geometry_type
+        if gt not in groups:
+            groups[gt] = []
+            order.append(gt)
+        groups[gt].append(feature)
+    return [(gt, groups[gt]) for gt in order]
+
+
 def export_geopackage(layer: VectorLayer, output_path: str | Path) -> Path:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,25 +146,48 @@ def export_geopackage(layer: VectorLayer, output_path: str | Path) -> Path:
         else:
             srs.ImportFromWkt(layer.crs)
 
-    geometry_type = ogr.wkbUnknown
-    for feature in layer.features:
-        if feature.geometry_type == "Polygon":
-            geometry_type = ogr.wkbPolygon
-            break
-        if feature.geometry_type == "LineString":
-            geometry_type = ogr.wkbLineString
-            break
+    feature_groups = _group_features_by_type(layer.features)
+    single_group = len(feature_groups) == 1
+    main_type = feature_groups[0][0] if feature_groups else "Polygon"
+    main_ogr_type = _ogr_geometry_type_for(main_type, ogr)
 
-    ogr_layer = datasource.CreateLayer(layer.name, srs=srs, geom_type=geometry_type)
-    if ogr_layer is None:
-        raise ExportError("OGR could not create the output layer.")
+    if single_group or not feature_groups:
+        ogr_layer = datasource.CreateLayer(layer.name, srs=srs, geom_type=main_ogr_type)
+        if ogr_layer is None:
+            raise ExportError("OGR could not create the output layer.")
+        _write_features_to_ogr_layer(ogr_layer, layer.features, ogr)
+    else:
+        type_suffixes = {
+            "Point": "_points",
+            "MultiPoint": "_points",
+            "LineString": "_lines",
+            "MultiLineString": "_lines",
+            "Polygon": "_polygons",
+            "MultiPolygon": "_polygons",
+        }
+        for geometry_type, group_features in feature_groups:
+            suffix = type_suffixes.get(geometry_type, f"_{geometry_type.lower()}")
+            sub_layer_name = f"{layer.name}{suffix}"
+            group_ogr_type = _ogr_geometry_type_for(geometry_type, ogr)
+            ogr_layer = datasource.CreateLayer(sub_layer_name, srs=srs, geom_type=group_ogr_type)
+            if ogr_layer is None:
+                raise ExportError(f"OGR could not create sub-layer '{sub_layer_name}'.")
+            _write_features_to_ogr_layer(ogr_layer, group_features, ogr)
 
-    field_names = sorted({str(key) for feature in layer.features for key in feature.properties.keys()})
+    datasource.FlushCache()
+    datasource = None
+    return path
+
+
+def _write_features_to_ogr_layer(
+    ogr_layer: Any, features: list[VectorFeature], ogr: Any
+) -> None:
+    field_names = sorted({str(key) for feature in features for key in feature.properties.keys()})
     for field_name in field_names:
         field_defn = ogr.FieldDefn(field_name, ogr.OFTString)
         ogr_layer.CreateField(field_defn)
 
-    for feature in layer.features:
+    for feature in features:
         ogr_feature = ogr.Feature(ogr_layer.GetLayerDefn())
         for field_name in field_names:
             value = feature.properties.get(field_name)
@@ -158,7 +207,3 @@ def export_geopackage(layer: VectorLayer, output_path: str | Path) -> Path:
         if ogr_layer.CreateFeature(ogr_feature) != 0:
             raise ExportError("OGR failed while writing a feature.")
         ogr_feature = None
-
-    datasource.FlushCache()
-    datasource = None
-    return path

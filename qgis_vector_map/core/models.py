@@ -63,6 +63,7 @@ class VectorLayer:
     features: list[VectorFeature] = field(default_factory=list)
     name: str = "vectorized"
     crs: str | None = None
+    geotransform: tuple[float, ...] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def feature_count(self) -> int:
