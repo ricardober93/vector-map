@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import tempfile
 import types
@@ -24,6 +25,166 @@ class OpenCVImportTests(unittest.TestCase):
         self.assertTrue(_ocv_mod._HAS_CV2)
         # Verify _require_cv2 succeeds when cv2 is present
         _ocv_mod._require_cv2()  # should not raise
+
+
+class SmartEngineSelectionTests(unittest.TestCase):
+    """Tests for automatic engine selection in 'auto' mode."""
+
+    def _make_profile(self, mode: str = "regional", engine_name: str = "classic-local"):
+        """Create a profile for testing."""
+        from dataclasses import replace
+        from qgis_vector_map.processing_profiles import ResolvedProfile
+        base = ResolvedProfile(
+            profile_id=f"{mode}-high-precision",
+            display_name=f"{mode.title()} High Precision",
+            mode=mode,
+            description="Test profile",
+            parameters={},
+        )
+        return replace(base, engine_name=engine_name)
+
+    def test_auto_selects_opencv_when_available(self):
+        """Auto mode should select OpenCV when it's available."""
+        from qgis_vector_map.engines.base import EngineRegistry, VectorizationEngine
+
+        registry = EngineRegistry()
+        classic_engine = types.SimpleNamespace(
+            name="classic-local",
+            supports=lambda p: True,
+        )
+        opencv_engine = types.SimpleNamespace(
+            name="opencv-local",
+            supports=lambda p: True,
+            is_available=lambda: True,
+        )
+        registry.engines = [classic_engine, opencv_engine]
+
+        profile = self._make_profile(engine_name="auto")
+
+        engine = registry.resolve(profile)
+        self.assertEqual(engine.name, "opencv-local")
+
+    def test_auto_selects_classic_when_opencv_unavailable(self):
+        """Auto mode should fall back to Classic when OpenCV is not available."""
+        from qgis_vector_map.engines.base import EngineRegistry
+
+        registry = EngineRegistry()
+        classic_engine = types.SimpleNamespace(
+            name="classic-local",
+            supports=lambda p: True,
+        )
+        opencv_engine = types.SimpleNamespace(
+            name="opencv-local",
+            supports=lambda p: True,
+            is_available=lambda: False,
+        )
+        registry.engines = [classic_engine, opencv_engine]
+
+        profile = self._make_profile(engine_name="auto")
+
+        engine = registry.resolve(profile)
+        self.assertEqual(engine.name, "classic-local")
+
+    def test_explicit_classic_bypasses_auto_logic(self):
+        """Explicit 'classic-local' should use classic even if OpenCV is available."""
+        from qgis_vector_map.engines.base import EngineRegistry
+
+        registry = EngineRegistry()
+        classic_engine = types.SimpleNamespace(
+            name="classic-local",
+            supports=lambda p: True,
+        )
+        opencv_engine = types.SimpleNamespace(
+            name="opencv-local",
+            supports=lambda p: True,
+            is_available=lambda: True,
+        )
+        registry.engines = [classic_engine, opencv_engine]
+
+        profile = self._make_profile(engine_name="classic-local")
+
+        engine = registry.resolve(profile)
+        self.assertEqual(engine.name, "classic-local")
+
+    def test_explicit_opencv_uses_opencv(self):
+        """Explicit 'opencv-local' should use OpenCV when available."""
+        from qgis_vector_map.engines.base import EngineRegistry
+
+        registry = EngineRegistry()
+        classic_engine = types.SimpleNamespace(
+            name="classic-local",
+            supports=lambda p: True,
+        )
+        opencv_engine = types.SimpleNamespace(
+            name="opencv-local",
+            supports=lambda p: True,
+            is_available=lambda: True,
+        )
+        registry.engines = [classic_engine, opencv_engine]
+
+        profile = self._make_profile(engine_name="opencv-local")
+
+        engine = registry.resolve(profile)
+        self.assertEqual(engine.name, "opencv-local")
+
+    def test_is_opencv_available_checks_version(self):
+        """is_opencv_available should check for version >= 4.8.0."""
+        from qgis_vector_map.engines.opencv import is_opencv_available
+
+        # Test with mock cv2
+        mock_cv2 = types.SimpleNamespace(__version__="4.10.0")
+        with patch.dict(sys.modules, {"cv2": mock_cv2}):
+            from qgis_vector_map.engines import opencv as ocv_mod
+            # Re-check the function
+            ocv_mod._HAS_CV2 = True
+            result = is_opencv_available()
+            self.assertTrue(result)
+
+    def test_is_opencv_available_rejects_old_version(self):
+        """is_opencv_available should reject versions < 4.8.0."""
+        from qgis_vector_map.engines.opencv import is_opencv_available
+
+        # Old version should return False
+        mock_cv2 = types.SimpleNamespace(__version__="4.5.0")
+        with patch.dict(sys.modules, {"cv2": mock_cv2}):
+            from qgis_vector_map.engines import opencv as ocv_mod
+            ocv_mod._HAS_CV2 = True
+            result = is_opencv_available()
+            self.assertFalse(result)
+
+    def test_registry_logs_engine_selection(self):
+        """Engine selection should be logged at INFO level."""
+        from qgis_vector_map.engines.base import EngineRegistry
+
+        registry = EngineRegistry()
+        classic_engine = types.SimpleNamespace(
+            name="classic-local",
+            supports=lambda p: True,
+        )
+        opencv_engine = types.SimpleNamespace(
+            name="opencv-local",
+            supports=lambda p: True,
+            is_available=lambda: True,
+        )
+        registry.engines = [classic_engine, opencv_engine]
+
+        profile = self._make_profile(engine_name="auto")
+
+        with self.assertLogs("qgis_vector_map.engines.base", level=logging.INFO) as cm:
+            _ = registry.resolve(profile)
+
+        log_messages = " ".join(cm.output)
+        self.assertIn("opencv-local", log_messages)
+
+    def test_integration_auto_mode_with_real_registry(self):
+        """Integration test: auto mode with real registry selects OpenCV."""
+        from qgis_vector_map.processing_profiles import resolve_profile
+        from qgis_vector_map.core.pipeline import PipelineOrchestrator
+
+        orch = PipelineOrchestrator()
+        profile = resolve_profile("regional-high-precision", {"engine_name": "auto"})
+        engine = orch.resolve_engine(profile)
+        self.assertEqual(engine.name, "opencv-local")
 
 
 class OpenCVEngineTests(unittest.TestCase):

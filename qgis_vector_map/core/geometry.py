@@ -512,6 +512,24 @@ def polygonize_label_map(
     background_label: int | None = None,
     connectivity: int = 4,
 ) -> list[dict[str, Any]]:
+    """Polygonize a label map into features with exterior rings and holes.
+
+    Uses OpenCV for fast contour extraction when available, falling back
+    to the pure-Python boundary-tracing approach otherwise.
+    """
+    try:
+        import cv2
+        import numpy as np
+        return _polygonize_label_map_cv2(
+            label_map,
+            min_component_area=min_component_area,
+            background_label=background_label,
+            connectivity=connectivity,
+        )
+    except ImportError:
+        pass
+
+    # Pure-Python fallback
     labels = sorted({int(value) for row in label_map for value in row})
     features: list[dict[str, Any]] = []
     for label in labels:
@@ -533,6 +551,94 @@ def polygonize_label_map(
                     }
                 )
     return features
+
+
+def _polygonize_label_map_cv2(
+    label_map: LabelMatrix,
+    *,
+    min_component_area: int = 1,
+    background_label: int | None = None,
+    connectivity: int = 4,
+) -> list[dict[str, Any]]:
+    """Numpy/OpenCV-accelerated label map polygonization."""
+    import cv2
+    import numpy as np
+
+    arr = np.array(label_map, dtype=np.int32)
+    unique_labels = sorted(np.unique(arr).tolist())
+    features: list[dict[str, Any]] = []
+
+    retr_mode = cv2.RETR_CCOMP if connectivity == 4 else cv2.RETR_TREE
+    # Use CHAIN_APPROX_NONE to preserve all contour points; simplification
+    # is applied later in the pipeline (approxPolyDP / simplify_path).
+    chain_method = cv2.CHAIN_APPROX_NONE
+
+    for label in unique_labels:
+        if background_label is not None and int(label) == int(background_label):
+            continue
+
+        mask = (arr == label).astype(np.uint8) * 255
+        contours, hierarchy = cv2.findContours(mask, retr_mode, chain_method)
+
+        if hierarchy is None or len(contours) == 0:
+            continue
+
+        h = hierarchy[0]
+        # Only process root contours (parent == -1)
+        root_indices = [i for i in range(len(h)) if h[i][3] == -1]
+
+        for root_idx in root_indices:
+            outer = contours[root_idx]
+            outer_area = cv2.contourArea(outer)
+            if outer_area < min_component_area:
+                continue
+
+            # Build rings: outer + holes
+            rings: list[list[list[float]]] = []
+            outer_ring = _cv_contour_to_coord_list(outer)
+            if len(outer_ring) >= 4:
+                rings.append(outer_ring)
+
+            # Find child contours (holes)
+            child_idx = h[root_idx][2]  # first child
+            while child_idx != -1:
+                child = contours[child_idx]
+                child_area = cv2.contourArea(child)
+                if child_area >= min_component_area:
+                    child_ring = _cv_contour_to_coord_list(child)
+                    if len(child_ring) >= 4:
+                        rings.append(child_ring)
+                child_idx = h[child_idx][0]  # next sibling
+
+            if not rings:
+                continue
+
+            # Count total pixel area for this label
+            total_pixel_area = int(np.sum(arr == label))
+            features.append(
+                {
+                    "geometry_type": "Polygon",
+                    "coordinates": rings,
+                    "label": int(label),
+                    "area_px": total_pixel_area,
+                    "ring_count": len(rings),
+                }
+            )
+
+    return features
+
+
+def _cv_contour_to_coord_list(contour: Any) -> list[list[float]]:
+    """Convert an OpenCV contour to a closed coordinate list."""
+    if contour is None or len(contour) == 0:
+        return []
+    points: list[list[float]] = []
+    for point in contour:
+        x, y = float(point[0][0]), float(point[0][1])
+        points.append([x, y])
+    if points and [points[0][0], points[0][1]] != [points[-1][0], points[-1][1]]:
+        points.append([points[0][0], points[0][1]])
+    return points
 
 
 def _neighbors_for_skeleton(x: int, y: int) -> tuple[GridPoint, ...]:
@@ -1010,3 +1116,358 @@ def apply_geotransform(
         return coordinates
 
     return coordinates
+
+
+# ------------------------------------------------------------------
+# New polygon improvement functions
+# ------------------------------------------------------------------
+
+def remove_collinear_points(
+    ring: Sequence[Point] | Sequence[tuple[float, float]] | list[list[float]],
+) -> list[tuple[float, float]]:
+    """Remove collinear intermediate vertices from a polygon ring.
+
+    A vertex is collinear when the cross product of the two adjacent
+    edge vectors is zero (within floating-point tolerance).
+    """
+    normalized = _normalize_ring(ring)
+    if len(normalized) <= 3:
+        return normalized
+
+    result: list[tuple[float, float]] = [normalized[0]]
+    for i in range(1, len(normalized) - 1):
+        prev = result[-1]
+        curr = normalized[i]
+        nxt = normalized[i + 1]
+        cross = (curr[0] - prev[0]) * (nxt[1] - curr[1]) - (curr[1] - prev[1]) * (nxt[0] - curr[0])
+        if abs(cross) > 1e-10:
+            result.append(curr)
+    # Always include last point (may be same as first for closed ring)
+    result.append(normalized[-1])
+    return result
+
+
+def _normalize_ring(
+    ring: Sequence[Point] | Sequence[tuple[float, float]] | list[list[float]],
+) -> list[tuple[float, float]]:
+    """Normalize ring points to (float, float) tuples."""
+    return [(float(p[0]), float(p[1])) for p in ring]
+
+
+def make_valid_polygon(
+    rings: list[list[list[float]]],
+) -> list[list[list[float]]] | None:
+    """Attempt to repair an invalid polygon using shapely if available.
+
+    Falls back to a simple re-close-ring approach without shapely.
+
+    Returns repaired rings or None if repair fails.
+    """
+    if _HAS_SHAPELY and _ShapelyPolygon is not None:
+        try:
+            from shapely import make_valid as _shapely_make_valid
+            # Build shapely polygon from rings
+            if not rings or len(rings[0]) < 4:
+                return None
+            exterior = [(float(p[0]), float(p[1])) for p in rings[0]]
+            holes = []
+            for ring in rings[1:]:
+                if len(ring) >= 4:
+                    holes.append([(float(p[0]), float(p[1])) for p in ring])
+            poly = _ShapelyPolygon(exterior, holes)
+            if not poly.is_valid:
+                repaired = _shapely_make_valid(poly)
+                # make_valid may return Polygon, MultiPolygon, or GeometryCollection
+                geom_type = repaired.geom_type
+                if geom_type == "Polygon":
+                    coords = []
+                    coords.append([list(p) for p in repaired.exterior.coords])
+                    for interior in repaired.interiors:
+                        coords.append([list(p) for p in interior.coords])
+                    return coords
+                elif geom_type == "MultiPolygon":
+                    # Return first polygon's rings (best effort for simple repair)
+                    first = list(repaired.geoms)[0]
+                    coords = []
+                    coords.append([list(p) for p in first.exterior.coords])
+                    for interior in first.interiors:
+                        coords.append([list(p) for p in interior.coords])
+                    return coords
+                elif geom_type == "GeometryCollection":
+                    # Extract polygon geoms from the collection
+                    for geom in repaired.geoms:
+                        if geom.geom_type == "Polygon" and geom.area > 0:
+                            coords = []
+                            coords.append([list(p) for p in geom.exterior.coords])
+                            for interior in geom.interiors:
+                                coords.append([list(p) for p in interior.coords])
+                            return coords
+                    return None
+            else:
+                # Already valid, return normalized
+                return [[list(p) for p in ring] for ring in rings]
+        except Exception:
+            pass
+
+    # Fallback: re-close rings and filter degenerate
+    repaired: list[list[list[float]]] = []
+    for ring in rings:
+        if len(ring) < 4:
+            continue
+        closed = list(ring)
+        if closed[0] != closed[-1]:
+            closed.append(closed[0])
+        # Check for zero-area
+        area = 0.0
+        for i in range(len(closed) - 1):
+            area += closed[i][0] * closed[i + 1][1] - closed[i + 1][0] * closed[i][1]
+        if abs(area / 2.0) < 1e-10:
+            continue
+        repaired.append(closed)
+    return repaired if repaired else None
+
+
+def dissolve_polygons_by_class(
+    features: list[Any],
+) -> list[Any]:
+    """Merge adjacent polygons that share the same class_id using shapely.
+
+    If shapely is not available, returns features unchanged.
+    """
+    if not _HAS_SHAPELY:
+        return features
+
+    try:
+        from shapely.ops import unary_union
+        from shapely.geometry import Polygon as ShapelyPolygon
+    except ImportError:
+        return features
+
+    # Group by class_id
+    groups: dict[str, list[Any]] = {}
+    order: list[str] = []
+    for feature in features:
+        class_id = str(feature.properties.get("class_id", "unknown"))
+        if class_id not in groups:
+            groups[class_id] = []
+            order.append(class_id)
+        groups[class_id].append(feature)
+
+    result: list[Any] = []
+    from .models import VectorFeature
+
+    for class_id in order:
+        group = groups[class_id]
+        if len(group) <= 1:
+            result.extend(group)
+            continue
+
+        # Build shapely polygons and union them
+        shapely_polys = []
+        for feature in group:
+            rings = feature.coordinates
+            if not rings or len(rings[0]) < 4:
+                continue
+            exterior = [(float(p[0]), float(p[1])) for p in rings[0]]
+            holes = []
+            for ring in rings[1:]:
+                if len(ring) >= 4:
+                    holes.append([(float(p[0]), float(p[1])) for p in ring])
+            try:
+                sp = ShapelyPolygon(exterior, holes)
+                if sp.is_valid:
+                    shapely_polys.append(sp)
+            except Exception:
+                # Keep original feature if shapely construction fails
+                result.append(feature)
+
+        if not shapely_polys:
+            continue
+
+        try:
+            union = unary_union(shapely_polys)
+        except Exception:
+            result.extend(group)
+            continue
+
+        # Extract features from union result
+        geom_type = union.geom_type
+        polys = []
+        if geom_type == "Polygon":
+            polys = [union]
+        elif geom_type == "MultiPolygon":
+            polys = list(union.geoms)
+
+        for i, poly in enumerate(polys):
+            coords: list[list[list[float]]] = []
+            coords.append([list(p) for p in poly.exterior.coords])
+            for interior in poly.interiors:
+                coords.append([list(p) for p in interior.coords])
+            result.append(
+                VectorFeature(
+                    geometry_type="Polygon",
+                    coordinates=coords,
+                    properties={
+                        "class_id": class_id,
+                        "feature_index": len(result),
+                        "pixel_area": int(poly.area),
+                        "ring_count": len(coords),
+                        "profile": group[0].properties.get("profile", ""),
+                        "dissolved": True,
+                        "validated": True,
+                    },
+                )
+            )
+
+    return result
+
+
+def stitch_polygon_features(
+    features: list[Any],
+    snap_tolerance: float = 2.0,
+) -> list[Any]:
+    """Merge polygon features that were split at tile boundaries.
+
+    Two polygons are candidates for merging when they are geometrically
+    adjacent (their buffered boundaries intersect within snap_tolerance)
+    AND they share the same class_id.
+
+    Uses shapely for geometric operations; falls back to returning
+    features unchanged when shapely is unavailable.
+    """
+    if not _HAS_SHAPELY or len(features) <= 1:
+        return features
+
+    try:
+        from shapely.geometry import Polygon as ShapelyPolygon
+        from shapely.ops import unary_union
+    except ImportError:
+        return features
+
+    from .models import VectorFeature
+
+    # Separate polygon from non-polygon features
+    polygon_features = [f for f in features if f.geometry_type == "Polygon"]
+    non_polygon = [f for f in features if f.geometry_type != "Polygon"]
+
+    if not polygon_features:
+        return features
+
+    # Build shapely polygons for spatial adjacency checking
+    shapely_polys: list[tuple[Any, Any]] = []  # (shapely_poly, original_feature)
+    for feature in polygon_features:
+        rings = feature.coordinates
+        if not rings or len(rings[0]) < 4:
+            continue
+        exterior = [(float(p[0]), float(p[1])) for p in rings[0]]
+        holes = []
+        for ring in rings[1:]:
+            if len(ring) >= 4:
+                holes.append([(float(p[0]), float(p[1])) for p in ring])
+        try:
+            sp = ShapelyPolygon(exterior, holes)
+            if sp.is_valid:
+                shapely_polys.append((sp, feature))
+            else:
+                # Try buffer(0) to fix minor invalidity
+                sp = sp.buffer(0)
+                if sp.is_valid and sp.geom_type == "Polygon":
+                    shapely_polys.append((sp, feature))
+                else:
+                    shapely_polys.append((sp, feature))  # keep anyway
+        except Exception:
+            pass
+
+    if len(shapely_polys) <= 1:
+        return features
+
+    # Build adjacency graph: two polygons are adjacent if their
+    # buffered boundaries intersect AND they share the same class_id
+    n = len(shapely_polys)
+    adjacency: list[set[int]] = [set() for _ in range(n)]
+    buffered = [sp.buffer(snap_tolerance) for sp, _ in shapely_polys]
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Check spatial adjacency
+            if not buffered[i].intersects(buffered[j]):
+                continue
+            # Check same class_id
+            ci = shapely_polys[i][1].properties.get("class_id")
+            cj = shapely_polys[j][1].properties.get("class_id")
+            if ci == cj:
+                adjacency[i].add(j)
+                adjacency[j].add(i)
+
+    # Find connected components via BFS
+    visited = [False] * n
+    components: list[list[int]] = []
+    for start in range(n):
+        if visited[start]:
+            continue
+        component: list[int] = [start]
+        visited[start] = True
+        queue = [start]
+        while queue:
+            node = queue.pop(0)
+            for neighbor in adjacency[node]:
+                if not visited[neighbor]:
+                    visited[neighbor] = True
+                    component.append(neighbor)
+                    queue.append(neighbor)
+        components.append(component)
+
+    # For each component, merge polygons if they are adjacent
+    result: list[Any] = []
+    for component in components:
+        if len(component) == 1:
+            # No merge needed
+            _, feature = shapely_polys[component[0]]
+            result.append(feature)
+            continue
+
+        # Merge adjacent polygons in this component
+        polys_to_merge = [shapely_polys[i][0] for i in component]
+        try:
+            merged = unary_union(polys_to_merge)
+        except Exception:
+            # If merge fails, keep originals
+            for i in component:
+                result.append(shapely_polys[i][1])
+            continue
+
+        # Extract polygons from merge result
+        merged_polys = []
+        if merged.geom_type == "Polygon":
+            merged_polys = [merged]
+        elif merged.geom_type == "MultiPolygon":
+            merged_polys = list(merged.geoms)
+        else:
+            for i in component:
+                result.append(shapely_polys[i][1])
+            continue
+
+        class_id = shapely_polys[component[0]][1].properties.get("class_id")
+        for poly in merged_polys:
+            if poly.geom_type != "Polygon":
+                continue
+            coords: list[list[list[float]]] = []
+            coords.append([list(p) for p in poly.exterior.coords])
+            for interior in poly.interiors:
+                coords.append([list(p) for p in interior.coords])
+            result.append(
+                VectorFeature(
+                    geometry_type="Polygon",
+                    coordinates=coords,
+                    properties={
+                        "class_id": class_id,
+                        "feature_index": len(result),
+                        "pixel_area": int(poly.area),
+                        "ring_count": len(coords),
+                        "stitched": True,
+                        "validated": True,
+                    },
+                )
+            )
+
+    return result + non_polygon

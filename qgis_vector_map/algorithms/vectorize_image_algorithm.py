@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -291,6 +292,9 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
     EDGE_CANNY_LOW = "EDGE_CANNY_LOW"
     EDGE_CANNY_HIGH = "EDGE_CANNY_HIGH"
     EDGE_BLUR = "EDGE_BLUR"
+    EDGE_TO_POLYGON = "EDGE_TO_POLYGON"
+    DISSOLVE_ADJACENT = "DISSOLVE_ADJACENT"
+    SIMPLIFY_TOLERANCE = "SIMPLIFY_TOLERANCE"
     OUTPUT = "OUTPUT"
     OUTPUT_FORMAT = "OUTPUT_FORMAT"
     PARAMETERS = "PARAMETERS"
@@ -300,6 +304,13 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
     @staticmethod
     def _tr(message: str) -> str:
         return QCoreApplication.translate("VectorizeImageAlgorithm", message)
+
+    @staticmethod
+    def _generate_default_layer_name(profile_id: str) -> str:
+        """Generate a descriptive layer name with profile and timestamp."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        profile_short = profile_id.replace("-high-precision", "").replace("-", "_")
+        return f"vectorized_{profile_short}_{timestamp}"
 
     def name(self) -> str:  # pragma: no cover - QGIS integration point
         return "vectorize_image"
@@ -393,19 +404,43 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
             )
         )
         self.addParameter(
-            QgsProcessingParameterString(
+            _QgsProcessingParameterEnum(
                 self.OUTPUT_FORMAT,
                 self._tr("Output format"),
-                defaultValue="auto",
-                multiLine=False,
+                options=["auto", "GeoPackage (.gpkg)", "GeoJSON (.geojson)", "ESRI Shapefile (.shp)"],
+                defaultValue=0,
             )
         )
         self.addParameter(
-            QgsProcessingParameterEnum(
+            _QgsProcessingParameterEnum(
                 self.ENGINE,
                 self._tr("Engine"),
                 options=["auto", "classic", "opencv"],
                 defaultValue=0,
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.EDGE_TO_POLYGON,
+                self._tr("Edge to polygon mode"),
+                options=["no", "yes"],
+                defaultValue=0,
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.DISSOLVE_ADJACENT,
+                self._tr("Dissolve adjacent polygons"),
+                options=["no", "yes"],
+                defaultValue=0,
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterString(
+                self.SIMPLIFY_TOLERANCE,
+                self._tr("Simplify tolerance (pixels)"),
+                defaultValue="0.5",
+                multiLine=False,
             )
         )
         self.addParameter(
@@ -434,7 +469,45 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
         return execution_mode_options[mode_index]
 
     def _validate_execution_mode_for_profile(self, execution_mode: str, profile_id: str) -> None:
-        pass
+        """Validate execution mode is supported for the given profile."""
+        if execution_mode == "tiled" and profile_id != "regional-high-precision":
+            raise _QgsProcessingException(
+                "Tiled execution mode is only supported for 'regional-high-precision' profile. "
+                "For edge/linear profiles, use 'auto' (recommended) or 'strict'."
+            )
+
+    @staticmethod
+    def _parse_output_format_parameter(parameters: dict[str, Any], context: Any) -> str:
+        """Parse output format from parameters.
+
+        Handles both numeric indices (from QGIS enum) and string values
+        (for backward compatibility and external API callers).
+        """
+        output_format_options = ["auto", "gpkg", "geojson", "shp"]
+        output_format_value = parameters.get("OUTPUT_FORMAT", "auto")
+
+        # If it's a string, check if it's a valid format
+        if isinstance(output_format_value, str):
+            if output_format_value in output_format_options:
+                return output_format_value
+            # If it's the full display name like "GeoPackage (.gpkg)", extract the format
+            for opt in output_format_options:
+                if opt in output_format_value or output_format_value in opt:
+                    return opt
+            return "auto"
+
+        # If it's a numeric index
+        try:
+            index = int(output_format_value)
+            if 0 <= index < len(output_format_options):
+                return output_format_options[index]
+        except (TypeError, ValueError):
+            pass
+        return "auto"
+
+    def _resolve_output_format(self, parameters: dict[str, Any], context: Any) -> str:
+        """Resolve output format from enum parameter using QGIS API."""
+        return self._parse_output_format_parameter(parameters, context)
 
     def processAlgorithm(
         self, parameters: dict[str, Any], context: Any, feedback: Any
@@ -465,8 +538,10 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
         self._validate_execution_mode_for_profile(execution_mode, profile_id)
         raw_parameters = self.parameterAsString(parameters, self.PARAMETERS, context)
 
-        layer_name = self.parameterAsString(parameters, self.LAYER_NAME, context) or "vectorized"
-        output_format = self.parameterAsString(parameters, self.OUTPUT_FORMAT, context) or "auto"
+        layer_name = self.parameterAsString(parameters, self.LAYER_NAME, context)
+        if not layer_name:
+            layer_name = self._generate_default_layer_name(profile_id)
+        output_format = self._resolve_output_format(parameters, context)
         profile_parameters = self._parse_parameters(raw_parameters)
 
         if profile_id == "edge-high-precision":
@@ -484,8 +559,35 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
         engine_index = self.parameterAsEnum(parameters, self.ENGINE, context)
         if 0 <= engine_index < len(engine_options):
             engine_name = engine_options[engine_index]
-            if engine_name != "auto":
-                profile_parameters["engine_name"] = f"{engine_name}-local"
+            if engine_name == "auto":
+                # Pass "auto" so the registry can select the best available engine
+                profile_parameters["engine_name"] = "auto"
+            elif engine_name == "classic":
+                profile_parameters["engine_name"] = "classic-local"
+            elif engine_name == "opencv":
+                profile_parameters["engine_name"] = "opencv-local"
+
+        # Edge to polygon mode (for edge profile)
+        edge_to_polygon_options = ["no", "yes"]
+        edge_to_polygon_index = self.parameterAsEnum(parameters, self.EDGE_TO_POLYGON, context)
+        if 0 <= edge_to_polygon_index < len(edge_to_polygon_options):
+            if edge_to_polygon_options[edge_to_polygon_index] == "yes":
+                profile_parameters["edge_to_polygon"] = True
+
+        # Dissolve adjacent polygons (for regional profile)
+        dissolve_options = ["no", "yes"]
+        dissolve_index = self.parameterAsEnum(parameters, self.DISSOLVE_ADJACENT, context)
+        if 0 <= dissolve_index < len(dissolve_options):
+            if dissolve_options[dissolve_index] == "yes":
+                profile_parameters["dissolve_adjacent"] = True
+
+        # Simplify tolerance override
+        simplify_tol = self.parameterAsString(parameters, self.SIMPLIFY_TOLERANCE, context)
+        if simplify_tol:
+            try:
+                profile_parameters["simplify_tolerance"] = float(simplify_tol)
+            except ValueError:
+                pass
 
         raster_crs = raster_layer.crs()
         crs_is_valid = raster_crs is not None and raster_crs.isValid()

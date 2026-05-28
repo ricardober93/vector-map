@@ -7,7 +7,17 @@ from typing import Any, Iterator
 
 from ..core.errors import DependencyError
 from ..core.export import export_vector_layer
-from ..core.geometry import validate_polygon_rings, repair_polygon_coordinates, snap_coordinates_to_grid, find_junctions, close_contour_to_polygon
+from ..core.geometry import (
+    validate_polygon_rings,
+    repair_polygon_coordinates,
+    snap_coordinates_to_grid,
+    find_junctions,
+    close_contour_to_polygon,
+    remove_collinear_points,
+    dissolve_polygons_by_class,
+    make_valid_polygon,
+    stitch_polygon_features,
+)
 from ..core.models import PipelineContext, ProgressCallback, StageName, VectorFeature, VectorLayer
 from ..core.raster import RasterFrame
 from .base import VectorizationEngine
@@ -31,6 +41,23 @@ def _require_cv2() -> None:
         )
 
 
+def is_opencv_available() -> bool:
+    """Check if OpenCV is installed and meets minimum version requirement."""
+    if not _HAS_CV2:
+        return False
+    try:
+        import cv2
+        version = getattr(cv2, "__version__", "0.0")
+        # Parse version tuple (e.g., "4.8.1" -> (4, 8, 1))
+        parts = version.split(".")
+        major = int(parts[0]) if parts else 0
+        minor = int(parts[1]) if len(parts) > 1 else 0
+        # Require >= 4.8.0
+        return (major, minor) >= (4, 8)
+    except Exception:
+        return False
+
+
 @dataclass(frozen=True)
 class _CVPreprocessedPayload:
     mode: str
@@ -46,6 +73,11 @@ class OpenCVVectorizationEngine(VectorizationEngine):
 
     name = "opencv-local"
     supported_modes = ("regional", "edge", "linear")
+
+    @staticmethod
+    def is_available() -> bool:
+        """Check if OpenCV is installed and meets minimum version requirement (>= 4.8.0)."""
+        return is_opencv_available()
 
     def supports(self, profile: Any) -> bool:
         _require_cv2()
@@ -115,7 +147,8 @@ class OpenCVVectorizationEngine(VectorizationEngine):
             raise DependencyError("Vectorize stage did not produce a valid vector layer.")
         mode = getattr(context.profile, "mode", None)
         parameters = dict(getattr(context.profile, "parameters", {}))
-        if mode == "regional":
+        has_polygons = any(f.geometry_type == "Polygon" for f in layer.features)
+        if mode == "regional" or (mode == "edge" and has_polygons):
             cleaned = self._postprocess_polygons(layer, parameters)
         else:
             cleaned = self._postprocess_lines(layer, parameters)
@@ -205,7 +238,7 @@ class OpenCVVectorizationEngine(VectorizationEngine):
             raise DependencyError("Regional preprocessing did not produce a label map.")
 
         min_area = int(parameters.get("min_region_area", 4))
-        simplify_tolerance = float(parameters.get("simplify_tolerance", 0.0))
+        simplify_tolerance = float(parameters.get("simplify_tolerance", 0.5))
         drop_background = bool(parameters.get("drop_background", True))
 
         unique_labels = np.unique(label_map)
@@ -236,78 +269,51 @@ class OpenCVVectorizationEngine(VectorizationEngine):
                 mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_TC89_L1
             )
 
-            # Group contours into polygon rings using hierarchy
-            if hierarchy is not None:
-                for idx, contour in enumerate(contours):
-                    area = cv2.contourArea(contour)
-                    if area < min_area:
-                        continue
+            if hierarchy is None or len(contours) == 0:
+                continue
 
-                    # Simplify with approxPolyDP
-                    if simplify_tolerance > 0:
-                        approx = cv2.approxPolyDP(contour, simplify_tolerance, True)
-                    else:
-                        approx = contour
+            # Only process ROOT contours (parent == -1 in hierarchy).
+            # Child contours are holes handled inside _contour_to_polygon_rings.
+            root_indices = self._root_contour_indices(hierarchy)
+            for root_idx in root_indices:
+                area = cv2.contourArea(contours[root_idx])
+                if area < min_area:
+                    continue
 
-                    rings = self._contour_to_polygon_rings(
-                        idx, contours, hierarchy, min_area, simplify_tolerance
-                    )
-                    if not rings:
-                        # Single contour without hierarchy — make a simple ring
-                        ring = self._cv_contour_to_ring(approx)
-                        if len(ring) >= 4:
-                            rings = [ring]
+                rings = self._contour_to_polygon_rings(
+                    root_idx, contours, hierarchy, min_area, simplify_tolerance
+                )
+                if not rings:
+                    continue
 
-                    if not rings:
-                        continue
-
-                    cleaned_rings = []
-                    for ring in rings:
-                        if len(ring) >= 4:
-                            cleaned_rings.append([[float(x), float(y)] for x, y in ring])
-                    if not cleaned_rings:
-                        continue
-
-                    features.append(
-                        VectorFeature(
-                            geometry_type="Polygon",
-                            coordinates=cleaned_rings,
-                            properties={
-                                "feature_index": len(features),
-                                "class_id": int(label),
-                                "pixel_area": int(area),
-                                "ring_count": len(cleaned_rings),
-                                "profile": "regional-high-precision",
-                            },
-                        )
-                    )
-            else:
-                # No hierarchy — each contour is independent
-                for contour in contours:
-                    area = cv2.contourArea(contour)
-                    if area < min_area:
-                        continue
-                    if simplify_tolerance > 0:
-                        approx = cv2.approxPolyDP(contour, simplify_tolerance, True)
-                    else:
-                        approx = contour
-                    ring = self._cv_contour_to_ring(approx)
+                # Remove collinear vertices for cleaner output
+                cleaned_rings = []
+                for ring in rings:
                     if len(ring) < 4:
                         continue
-                    cleaned_rings = [[[float(x), float(y)] for x, y in ring]]
-                    features.append(
-                        VectorFeature(
-                            geometry_type="Polygon",
-                            coordinates=cleaned_rings,
-                            properties={
-                                "feature_index": len(features),
-                                "class_id": int(label),
-                                "pixel_area": int(area),
-                                "ring_count": 1,
-                                "profile": "regional-high-precision",
-                            },
-                        )
+                    if simplify_tolerance > 0:
+                        simplified = remove_collinear_points(ring)
+                    else:
+                        simplified = ring
+                    if len(simplified) >= 4:
+                        cleaned_rings.append([[float(x), float(y)] for x, y in simplified])
+
+                if not cleaned_rings:
+                    continue
+
+                features.append(
+                    VectorFeature(
+                        geometry_type="Polygon",
+                        coordinates=cleaned_rings,
+                        properties={
+                            "feature_index": len(features),
+                            "class_id": int(label),
+                            "pixel_area": int(area),
+                            "ring_count": len(cleaned_rings),
+                            "profile": "regional-high-precision",
+                        },
                     )
+                )
 
         return VectorLayer(
             features=features,
@@ -321,6 +327,18 @@ class OpenCVVectorizationEngine(VectorizationEngine):
                 "source": context.raster.source_name,
             },
         )
+
+    @staticmethod
+    def _root_contour_indices(hierarchy: Any) -> list[int]:
+        """Return indices of root contours (those without a parent in the hierarchy).
+
+        In OpenCV's CCOMP hierarchy, hierarchy[0][i] = [next, prev, first_child, parent].
+        A root contour has parent == -1.
+        """
+        h = hierarchy[0] if hierarchy is not None else None
+        if h is None:
+            return []
+        return [i for i in range(len(h)) if h[i][3] == -1]
 
     def _contour_to_polygon_rings(
         self, parent_idx: int, contours: list, hierarchy: Any,
@@ -373,7 +391,8 @@ class OpenCVVectorizationEngine(VectorizationEngine):
 
     def _postprocess_polygons(self, layer: VectorLayer, parameters: dict[str, Any]) -> VectorLayer:
         min_area = float(parameters.get("min_region_area", 4))
-        tolerance = float(parameters.get("simplify_tolerance", 0.0))
+        tolerance = float(parameters.get("simplify_tolerance", 0.5))
+        dissolve_by_class = bool(parameters.get("dissolve_adjacent", True))
         cleaned: list[VectorFeature] = []
         for feature in layer.features:
             if feature.geometry_type != "Polygon":
@@ -395,6 +414,14 @@ class OpenCVVectorizationEngine(VectorizationEngine):
                 continue
 
             issues = validate_polygon_rings(rings)
+            if issues:
+                # Attempt repair via make_valid (shapely) or re-ring closure
+                repaired = make_valid_polygon(rings)
+                if repaired:
+                    rings = repaired
+                else:
+                    # Last resort: filter invalid features
+                    continue
 
             cleaned.append(
                 VectorFeature(
@@ -403,6 +430,11 @@ class OpenCVVectorizationEngine(VectorizationEngine):
                     properties={**dict(feature.properties), "validated": True},
                 )
             )
+
+        # Optional dissolve: merge adjacent polygons of the same class
+        if dissolve_by_class and cleaned:
+            cleaned = dissolve_polygons_by_class(cleaned)
+
         return VectorLayer(
             features=cleaned,
             name=layer.name,
@@ -419,10 +451,27 @@ class OpenCVVectorizationEngine(VectorizationEngine):
         edge_threshold1 = float(parameters.get("edge_canny_low", 50))
         edge_threshold2 = float(parameters.get("edge_canny_high", 150))
         blur_size = int(parameters.get("edge_blur", 3))
+        edge_to_polygon = bool(parameters.get("edge_to_polygon", False))
 
         blurred = cv2.GaussianBlur(gray, (blur_size, blur_size), 0)
         edges = cv2.Canny(blurred, edge_threshold1, edge_threshold2)
-        contours, hierarchy = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_TC89_L1)
+
+        # Optional morphological closing to bridge small gaps before polygonization
+        if edge_to_polygon:
+            close_radius = int(parameters.get("close_radius", 2))
+            if close_radius > 0:
+                kernel = cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE, (2 * close_radius + 1, 2 * close_radius + 1)
+                )
+                edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+            # Use CCOMP hierarchy for polygon output
+            contours, hierarchy = cv2.findContours(
+                edges, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_TC89_L1
+            )
+        else:
+            contours, hierarchy = cv2.findContours(
+                edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_TC89_L1
+            )
 
         return _CVPreprocessedPayload(
             mode="edge", image=gray, mask=edges, contours=contours, hierarchy=hierarchy
@@ -439,36 +488,78 @@ class OpenCVVectorizationEngine(VectorizationEngine):
         if contours is None:
             return VectorLayer(features=[], name=context.request.layer_name)
 
+        edge_to_polygon = bool(parameters.get("edge_to_polygon", False))
         min_line_length = int(parameters.get("min_line_length", 2))
         simplify_tolerance = float(parameters.get("simplify_tolerance", 0.5))
+        min_area = int(parameters.get("min_region_area", 4))
 
         features: list[VectorFeature] = []
-        for idx, contour in enumerate(contours):
-            if progress_cb and idx % 100 == 0:
-                progress_cb(
-                    StageName.VECTORIZE,
-                    idx / max(1, len(contours)),
-                    f"Tracing edge contour {idx}/{len(contours)}",
+
+        if edge_to_polygon and payload.hierarchy is not None:
+            # Polygon mode: emit closed polygons from CCOMP hierarchy
+            root_indices = self._root_contour_indices(payload.hierarchy)
+            for root_idx in root_indices:
+                contour = contours[root_idx]
+                area = cv2.contourArea(contour)
+                if area < min_area:
+                    continue
+                rings = self._contour_to_polygon_rings(
+                    root_idx, contours, payload.hierarchy, min_area, simplify_tolerance
                 )
-            if simplify_tolerance > 0:
-                approx = cv2.approxPolyDP(contour, simplify_tolerance, True)
-            else:
-                approx = contour
-            ring = self._cv_contour_to_ring(approx)
-            if len(ring) < min_line_length:
-                continue
-            coords = [[float(x), float(y)] for x, y in ring]
-            features.append(
-                VectorFeature(
-                    geometry_type="LineString",
-                    coordinates=coords,
-                    properties={
-                        "feature_index": len(features),
-                        "profile": "edge-high-precision",
-                        "path_length_px": _polyline_length(coords),
-                    },
+                if not rings:
+                    continue
+                cleaned_rings = []
+                for ring in rings:
+                    if len(ring) < 4:
+                        continue
+                    if simplify_tolerance > 0:
+                        simplified = remove_collinear_points(ring)
+                    else:
+                        simplified = ring
+                    if len(simplified) >= 4:
+                        cleaned_rings.append([[float(x), float(y)] for x, y in simplified])
+                if not cleaned_rings:
+                    continue
+                features.append(
+                    VectorFeature(
+                        geometry_type="Polygon",
+                        coordinates=cleaned_rings,
+                        properties={
+                            "feature_index": len(features),
+                            "profile": "edge-high-precision",
+                            "pixel_area": int(area),
+                            "ring_count": len(cleaned_rings),
+                        },
+                    )
                 )
-            )
+        else:
+            # Line mode (default): emit LineStrings from contours
+            for idx, contour in enumerate(contours):
+                if progress_cb and idx % 100 == 0:
+                    progress_cb(
+                        StageName.VECTORIZE,
+                        idx / max(1, len(contours)),
+                        f"Tracing edge contour {idx}/{len(contours)}",
+                    )
+                if simplify_tolerance > 0:
+                    approx = cv2.approxPolyDP(contour, simplify_tolerance, True)
+                else:
+                    approx = contour
+                ring = self._cv_contour_to_ring(approx)
+                if len(ring) < min_line_length:
+                    continue
+                coords = [[float(x), float(y)] for x, y in ring]
+                features.append(
+                    VectorFeature(
+                        geometry_type="LineString",
+                        coordinates=coords,
+                        properties={
+                            "feature_index": len(features),
+                            "profile": "edge-high-precision",
+                            "path_length_px": _polyline_length(coords),
+                        },
+                    )
+                )
 
         return VectorLayer(
             features=features,

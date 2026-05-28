@@ -1,0 +1,500 @@
+"""Vector Map dialog for simplified UX."""
+
+from __future__ import annotations
+
+import tempfile
+from datetime import datetime
+from pathlib import Path
+from typing import Any, cast
+
+_QDialog: Any
+_QLabel: Any
+_QLineEdit: Any
+_QComboBox: Any
+_QPushButton: Any
+_QVBoxLayout: Any
+_QHBoxLayout: Any
+_QGridLayout: Any
+_QWidget: Any
+_QFileDialog: Any
+_QGroupBox: Any
+_QMessageBox: Any
+_QProgressBar: Any
+_QCheckBox: Any
+
+# Try to import PyQt5/PyQt6 for Qt widgets
+try:
+    from PyQt5.QtWidgets import QDialog as _QDialog
+    from PyQt5.QtWidgets import QLabel as _QLabel
+    from PyQt5.QtWidgets import QLineEdit as _QLineEdit
+    from PyQt5.QtWidgets import QComboBox as _QComboBox
+    from PyQt5.QtWidgets import QPushButton as _QPushButton
+    from PyQt5.QtWidgets import QVBoxLayout as _QVBoxLayout
+    from PyQt5.QtWidgets import QHBoxLayout as _QHBoxLayout
+    from PyQt5.QtWidgets import QGridLayout as _QGridLayout
+    from PyQt5.QtWidgets import QWidget as _QWidget
+    from PyQt5.QtWidgets import QFileDialog as _QFileDialog
+    from PyQt5.QtWidgets import QGroupBox as _QGroupBox
+    from PyQt5.QtWidgets import QMessageBox as _QMessageBox
+    from PyQt5.QtWidgets import QProgressBar as _QProgressBar
+    from PyQt5.QtWidgets import QCheckBox as _QCheckBox
+
+    HAS_QT = True
+except ImportError:
+    try:
+        from PyQt6.QtWidgets import QDialog as _QDialog
+        from PyQt6.QtWidgets import QLabel as _QLabel
+        from PyQt6.QtWidgets import QLineEdit as _QLineEdit
+        from PyQt6.QtWidgets import QComboBox as _QComboBox
+        from PyQt6.QtWidgets import QPushButton as _QPushButton
+        from PyQt6.QtWidgets import QVBoxLayout as _QVBoxLayout
+        from PyQt6.QtWidgets import QHBoxLayout as _QHBoxLayout
+        from PyQt6.QtWidgets import QGridLayout as _QGridLayout
+        from PyQt6.QtWidgets import QWidget as _QWidget
+        from PyQt6.QtWidgets import QFileDialog as _QFileDialog
+        from PyQt6.QtWidgets import QGroupBox as _QGroupBox
+        from PyQt6.QtWidgets import QMessageBox as _QMessageBox
+        from PyQt6.QtWidgets import QProgressBar as _QProgressBar
+        from PyQt6.QtWidgets import QCheckBox as _QCheckBox
+
+        HAS_QT = True
+    except ImportError:
+        HAS_QT = False
+
+# Fallback classes when Qt is not available
+if not HAS_QT:
+    class _QDialog:
+        def __init__(self, *args, **kwargs): pass
+
+    class _QLabel:
+        def __init__(self, *args, **kwargs): pass
+        def setText(self, text): pass
+
+    class _QLineEdit:
+        def __init__(self, *args, **kwargs): pass
+        def text(self): return ""
+        def setText(self, text): pass
+
+    class _QComboBox:
+        def __init__(self, *args, **kwargs): pass
+        def addItems(self, items): pass
+        def currentText(self): return ""
+        def currentIndex(self): return 0
+        def setCurrentIndex(self, index): pass
+
+    class _QPushButton:
+        def __init__(self, *args, **kwargs): pass
+        clicked = None  # Signal placeholder
+        def setText(self, text): pass
+
+    class _QVBoxLayout:
+        def __init__(self, *args, **kwargs): pass
+        def addWidget(self, widget): pass
+        def addLayout(self, layout): pass
+
+    class _QHBoxLayout:
+        def __init__(self, *args, **kwargs): pass
+        def addWidget(self, widget): pass
+        def addLayout(self, layout): pass
+
+    class _QGridLayout:
+        def __init__(self, *args, **kwargs): pass
+        def addWidget(self, widget, row, col): pass
+
+    class _QWidget:
+        def __init__(self, *args, **kwargs): pass
+        def setLayout(self, layout): pass
+
+    class _QFileDialog:
+        @staticmethod
+        def getOpenFileName(*args, **kwargs):
+            return ("", "")
+
+        @staticmethod
+        def getSaveFileName(*args, **kwargs):
+            return ("", "")
+
+    class _QGroupBox:
+        def __init__(self, *args, **kwargs): pass
+        def setTitle(self, title): pass
+        def setLayout(self, layout): pass
+
+    class _QMessageBox:
+        @staticmethod
+        def information(*args, **kwargs): pass
+        @staticmethod
+        def warning(*args, **kwargs): pass
+        @staticmethod
+        def critical(*args, **kwargs): pass
+
+    class _QProgressBar:
+        def __init__(self, *args, **kwargs): pass
+        def setValue(self, value): pass
+        def setMaximum(self, value): pass
+        def setMinimum(self, value): pass
+        def setRange(self, min_val, max_val): pass
+
+    class _QCheckBox:
+        def __init__(self, *args, **kwargs): pass
+        def isChecked(self): return False
+        def setChecked(self, checked): pass
+
+
+QDialog = cast(type, _QDialog)
+QLabel = cast(type, _QLabel)
+QLineEdit = cast(type, _QLineEdit)
+QComboBox = cast(type, _QComboBox)
+QPushButton = cast(type, _QPushButton)
+QVBoxLayout = cast(type, _QVBoxLayout)
+QHBoxLayout = cast(type, _QHBoxLayout)
+QGridLayout = cast(type, _QGridLayout)
+QWidget = cast(type, _QWidget)
+QFileDialog = cast(type, _QFileDialog)
+QGroupBox = cast(type, _QGroupBox)
+QMessageBox = cast(type, _QMessageBox)
+QProgressBar = cast(type, _QProgressBar)
+QCheckBox = cast(type, _QCheckBox)
+
+
+class VectorMapDialog(_QDialog if HAS_QT else object):
+    """Simplified UX dialog for Vector Map plugin.
+
+    Provides a user-friendly interface for vectorizing raster images
+    with visual parameter selection and real-time feedback.
+    """
+
+    # Profile options
+    PROFILE_OPTIONS = [
+        "regional-high-precision",
+        "edge-high-precision",
+        "linear-high-precision",
+    ]
+
+    # Execution mode options
+    EXECUTION_MODE_OPTIONS = [
+        "auto",
+        "strict",
+        "tiled",
+    ]
+
+    # Output format options
+    OUTPUT_FORMAT_OPTIONS = [
+        "auto",
+        "GeoPackage (.gpkg)",
+        "GeoJSON (.geojson)",
+        "ESRI Shapefile (.shp)",
+    ]
+
+    # Engine options
+    ENGINE_OPTIONS = [
+        "auto",
+        "classic",
+        "opencv",
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        if not HAS_QT:
+            return
+
+        self.setWindowTitle("Vector Map - Vectorize Image")
+        self.setMinimumWidth(500)
+        self.resize(550, 400)
+
+        self._setup_ui()
+        self._connect_signals()
+
+    def _setup_ui(self) -> None:
+        """Setup the dialog UI components."""
+        main_layout = QVBoxLayout(self)
+
+        # Input section
+        input_group = QGroupBox("Input")
+        input_layout = QGridLayout()
+
+        # Raster file selector
+        self.raster_label = QLabel("Raster:")
+        self.raster_path_edit = QLineEdit()
+        self.raster_browse_btn = QPushButton("Browse...")
+
+        input_layout.addWidget(self.raster_label, 0, 0)
+        input_layout.addWidget(self.raster_path_edit, 0, 1)
+        input_layout.addWidget(self.raster_browse_btn, 0, 2)
+
+        input_group.setLayout(input_layout)
+        main_layout.addWidget(input_group)
+
+        # Processing section
+        processing_group = QGroupBox("Processing")
+        processing_layout = QGridLayout()
+
+        # Profile selector
+        self.profile_label = QLabel("Profile:")
+        self.profile_combo = QComboBox()
+        self.profile_combo.addItems(self.PROFILE_OPTIONS)
+
+        # Engine selector
+        self.engine_label = QLabel("Engine:")
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItems(self.ENGINE_OPTIONS)
+
+        # Execution mode selector
+        self.exec_mode_label = QLabel("Execution Mode:")
+        self.exec_mode_combo = QComboBox()
+        self.exec_mode_combo.addItems(self.EXECUTION_MODE_OPTIONS)
+
+        processing_layout.addWidget(self.profile_label, 0, 0)
+        processing_layout.addWidget(self.profile_combo, 0, 1, 1, 2)
+        processing_layout.addWidget(self.engine_label, 1, 0)
+        processing_layout.addWidget(self.engine_combo, 1, 1, 1, 2)
+        processing_layout.addWidget(self.exec_mode_label, 2, 0)
+        processing_layout.addWidget(self.exec_mode_combo, 2, 1, 1, 2)
+
+        processing_group.setLayout(processing_layout)
+        main_layout.addWidget(processing_group)
+
+        # Output section
+        output_group = QGroupBox("Output")
+        output_layout = QGridLayout()
+
+        # Output format selector
+        self.output_format_label = QLabel("Format:")
+        self.output_format_combo = QComboBox()
+        self.output_format_combo.addItems(self.OUTPUT_FORMAT_OPTIONS)
+
+        # Layer name
+        self.layer_name_label = QLabel("Layer Name:")
+        self.layer_name_edit = QLineEdit()
+        self.layer_name_edit.setText(self._generate_default_layer_name())
+
+        # Output file selector
+        self.output_file_label = QLabel("Output File:")
+        self.output_file_edit = QLineEdit()
+        self.output_browse_btn = QPushButton("Browse...")
+
+        output_layout.addWidget(self.output_format_label, 0, 0)
+        output_layout.addWidget(self.output_format_combo, 0, 1, 1, 2)
+        output_layout.addWidget(self.layer_name_label, 1, 0)
+        output_layout.addWidget(self.layer_name_edit, 1, 1, 1, 2)
+        output_layout.addWidget(self.output_file_label, 2, 0)
+        output_layout.addWidget(self.output_file_edit, 2, 1)
+        output_layout.addWidget(self.output_browse_btn, 2, 2)
+
+        output_group.setLayout(output_layout)
+        main_layout.addWidget(output_group)
+
+        # Preview section
+        self.preview_label = QLabel("")
+        self.preview_label.setStyleSheet("color: #666; font-size: 11px;")
+        main_layout.addWidget(self.preview_label)
+
+        # Progress bar (hidden by default)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setRange(0, 100)
+        main_layout.addWidget(self.progress_bar)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.vectorize_btn = QPushButton("Vectorize ▶")
+        self.vectorize_btn.setDefault(True)
+
+        button_layout.addWidget(self.cancel_btn)
+        button_layout.addWidget(self.vectorize_btn)
+
+        main_layout.addLayout(button_layout)
+
+        # Store references to main layout for later
+        self._main_layout = main_layout
+
+    def _connect_signals(self) -> None:
+        """Connect UI signals to slots."""
+        self.raster_browse_btn.clicked.connect(self._on_browse_raster)
+        self.output_browse_btn.clicked.connect(self._on_browse_output)
+        self.cancel_btn.clicked.connect(self.reject)
+        self.vectorize_btn.clicked.connect(self._on_vectorize)
+        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+
+    def _on_browse_raster(self) -> None:
+        """Handle raster file browser button click."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Raster File",
+            "",
+            "Raster Files (*.tif *.tiff *.png *.jpg *.jpeg *.bmp);;All Files (*)"
+        )
+        if file_path:
+            self.raster_path_edit.setText(file_path)
+            self._update_preview()
+
+    def _on_browse_output(self) -> None:
+        """Handle output file browser button click."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Select Output File",
+            "",
+            "GeoPackage (*.gpkg);;GeoJSON (*.geojson);;Shapefile (*.shp);;All Files (*)"
+        )
+        if file_path:
+            self.output_file_edit.setText(file_path)
+
+    def _on_profile_changed(self, index: int) -> None:
+        """Handle profile selection change."""
+        profile_id = self.PROFILE_OPTIONS[index]
+
+        # Update layer name with new profile
+        self.layer_name_edit.setText(self._generate_default_layer_name(profile_id))
+
+        # Update execution mode availability
+        if profile_id != "regional-high-precision":
+            # Disable 'tiled' for non-regional profiles
+            if self.exec_mode_combo.currentIndex() == 2:  # 'tiled'
+                self.exec_mode_combo.setCurrentIndex(0)  # Switch to 'auto'
+
+    def _on_vectorize(self) -> None:
+        """Handle vectorize button click."""
+        # Validate input
+        raster_path = self.raster_path_edit.text().strip()
+        if not raster_path:
+            QMessageBox.warning(self, "Validation Error", "Please select a raster file.")
+            return
+
+        output_path = self.output_file_edit.text().strip()
+        if not output_path:
+            QMessageBox.warning(self, "Validation Error", "Please specify an output file.")
+            return
+
+        # Check tiled mode for non-regional profiles
+        if self.exec_mode_combo.currentText() == "tiled" and self.profile_combo.currentText() != "regional-high-precision":
+            QMessageBox.warning(
+                self,
+                "Invalid Configuration",
+                "Tiled execution mode is only supported for 'regional-high-precision' profile."
+            )
+            return
+
+        # All good - the actual vectorization will be handled by the algorithm
+        self.accept()
+
+    def _update_preview(self) -> None:
+        """Update the raster preview information."""
+        raster_path = self.raster_path_edit.text().strip()
+
+        if not raster_path:
+            self.preview_label.setText("")
+            return
+
+        path = Path(raster_path)
+        if not path.exists():
+            self.preview_label.setText(f"⚠️ File not found: {raster_path}")
+            return
+
+        try:
+            # Try to get raster metadata without loading the full image
+            info = self._get_raster_preview_info(raster_path)
+
+            preview_text = f"📊 Size: {info['width']} × {info['height']} ({info['pixels']:,} px)"
+
+            if info.get("tile_count"):
+                preview_text += f" | Tiles: ~{info['tile_count']} ({info['tile_size']}px)"
+
+            if info.get("warnings"):
+                preview_text += f" | ⚠️ {info['warnings'][0]}"
+
+            self.preview_label.setText(preview_text)
+
+        except Exception as e:
+            self.preview_label.setText(f"📊 {raster_path}")
+
+    def _get_raster_preview_info(self, raster_path: str) -> dict[str, Any]:
+        """Get raster metadata for preview without loading full image."""
+        info = {
+            "width": 0,
+            "height": 0,
+            "pixels": 0,
+            "tile_count": None,
+            "tile_size": 2048,
+            "warnings": [],
+        }
+
+        try:
+            from osgeo import gdal  # type: ignore
+        except ImportError:
+            info["warnings"].append("GDAL not available for preview")
+            return info
+
+        try:
+            dataset = gdal.Open(raster_path)
+            if dataset is None:
+                info["warnings"].append("Could not open raster")
+                return info
+
+            info["width"] = dataset.RasterXSize
+            info["height"] = dataset.RasterYSize
+            info["pixels"] = info["width"] * info["height"]
+
+            # Estimate tiles
+            tile_size = 2048
+            tiles_x = (info["width"] + tile_size - 1) // tile_size
+            tiles_y = (info["height"] + tile_size - 1) // tile_size
+            info["tile_count"] = tiles_x * tiles_y
+            info["tile_size"] = tile_size
+
+            # Add warnings for large rasters
+            if info["pixels"] > 150_000_000:
+                info["warnings"].append(f"Large raster - auto will use tiled mode")
+
+        except Exception as e:
+            info["warnings"].append(f"Could not read metadata: {e}")
+
+        return info
+
+    def _generate_default_layer_name(self, profile_id: str | None = None) -> str:
+        """Generate a descriptive layer name with timestamp."""
+        if profile_id is None:
+            profile_id = self.profile_combo.currentText() if hasattr(self, 'profile_combo') else "regional-high-precision"
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        profile_short = profile_id.replace("-high-precision", "").replace("-", "_")
+        return f"vectorized_{profile_short}_{timestamp}"
+
+    def get_parameters(self) -> dict[str, Any]:
+        """Get the dialog parameters as a dictionary."""
+        return {
+            "raster_path": self.raster_path_edit.text().strip(),
+            "profile": self.profile_combo.currentText(),
+            "engine": self.engine_combo.currentText(),
+            "execution_mode": self.exec_mode_combo.currentText(),
+            "output_format": self.OUTPUT_FORMAT_OPTIONS[self.output_format_combo.currentIndex()],
+            "layer_name": self.layer_name_edit.text().strip(),
+            "output_path": self.output_file_edit.text().strip(),
+        }
+
+    def set_progress(self, value: int) -> None:
+        """Set the progress bar value (0-100)."""
+        if hasattr(self, 'progress_bar'):
+            self.progress_bar.setValue(value)
+
+    def show_progress(self, visible: bool = True) -> None:
+        """Show or hide the progress bar."""
+        if hasattr(self, 'progress_bar'):
+            self.progress_bar.setVisible(visible)
+
+    def enable_controls(self, enabled: bool = True) -> None:
+        """Enable or disable the dialog controls."""
+        if hasattr(self, 'raster_path_edit'):
+            self.raster_path_edit.setEnabled(enabled)
+            self.raster_browse_btn.setEnabled(enabled)
+            self.profile_combo.setEnabled(enabled)
+            self.engine_combo.setEnabled(enabled)
+            self.exec_mode_combo.setEnabled(enabled)
+            self.output_format_combo.setEnabled(enabled)
+            self.layer_name_edit.setEnabled(enabled)
+            self.output_file_edit.setEnabled(enabled)
+            self.output_browse_btn.setEnabled(enabled)
+            self.vectorize_btn.setEnabled(enabled)
+            self.cancel_btn.setEnabled(enabled)

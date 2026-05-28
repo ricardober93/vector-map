@@ -165,6 +165,14 @@ class PipelineOrchestrator:
         profile: ResolvedProfile,
     ) -> tuple[str, list[str]]:
         """Resolve execution_mode to effective memory_policy with auto-detection."""
+        # First, check for explicit memory policies from raster load options
+        # (expert-override, regional-tiles, tiled) that bypass auto-detection
+        if raster_load_options.memory_policy in ("expert-override", "regional-tiles", "tiled"):
+            return self._resolve_memory_policy(
+                request=request,
+                raster_load_options=raster_load_options,
+            )
+
         execution_mode = getattr(request, "execution_mode", "auto")
         warnings: list[str] = []
 
@@ -630,6 +638,9 @@ class PipelineOrchestrator:
                 "output coordinates will be in pixel space."
             )
 
+        # Stitch line features split at tile boundaries (non-regional modes).
+        # Polygon stitching is handled by dissolve_adjacent in postprocess,
+        # not in the pipeline, because tiled class_ids are local per tile.
         if profile.mode != "regional":
             layer = context.artifacts["vector_layer"]
             if isinstance(layer, VectorLayer):

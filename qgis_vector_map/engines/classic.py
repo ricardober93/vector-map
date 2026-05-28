@@ -15,12 +15,15 @@ from ..core.geometry import (
     close_contour_to_polygon,
     close_ring,
     distance_between_points,
+    dissolve_polygons_by_class,
     find_junctions,
+    make_valid_polygon,
     majority_filter,
     otsu_threshold,
     polygon_area,
     polygonize_label_map,
     polyline_length,
+    remove_collinear_points,
     repair_polygon_coordinates,
     simplify_path,
     snap_coordinates_to_grid,
@@ -199,7 +202,7 @@ class ClassicVectorizationEngine(VectorizationEngine):
             raise ConfigurationError("Regional preprocessing did not produce a label map.")
         min_region_area = int(parameters.get("min_region_area", 4))
         min_hole_area = int(parameters.get("min_hole_area", 4))
-        simplify_tolerance = float(parameters.get("simplify_tolerance", 0.0))
+        simplify_tolerance = float(parameters.get("simplify_tolerance", 0.5))
         drop_background = bool(parameters.get("drop_background", True))
 
         raw_features = polygonize_label_map(
@@ -253,7 +256,8 @@ class ClassicVectorizationEngine(VectorizationEngine):
 
     def _postprocess_polygons(self, layer: VectorLayer, parameters: dict[str, Any]) -> VectorLayer:
         min_area = float(parameters.get("min_region_area", 4))
-        tolerance = float(parameters.get("simplify_tolerance", 0.0))
+        tolerance = float(parameters.get("simplify_tolerance", 0.5))
+        dissolve_by_class = bool(parameters.get("dissolve_adjacent", True))
         cleaned_features: list[VectorFeature] = []
         for feature in layer.features:
             if feature.geometry_type != "Polygon":
@@ -264,7 +268,9 @@ class ClassicVectorizationEngine(VectorizationEngine):
                 simplified = simplify_path(points, tolerance=tolerance)
                 if len(simplified) < 4:
                     continue
-                cleaned_ring = close_ring(simplified)
+                # Remove collinear vertices for cleaner output
+                cleaned = remove_collinear_points(simplified)
+                cleaned_ring = close_ring([(float(x), float(y)) for x, y in cleaned])
                 if abs(polygon_area(cleaned_ring)) < min_area:
                     continue
                 rings.append([[float(x), float(y)] for x, y in cleaned_ring])
@@ -277,6 +283,12 @@ class ClassicVectorizationEngine(VectorizationEngine):
                 continue
 
             issues = validate_polygon_rings(rings)
+            if issues:
+                repaired = make_valid_polygon(rings)
+                if repaired:
+                    rings = repaired
+                else:
+                    continue
 
             cleaned_features.append(
                 VectorFeature(
@@ -285,6 +297,11 @@ class ClassicVectorizationEngine(VectorizationEngine):
                     properties={**dict(feature.properties), "validated": True},
                 )
             )
+
+        # Optional dissolve: merge adjacent polygons of the same class
+        if dissolve_by_class and cleaned_features:
+            cleaned_features = dissolve_polygons_by_class(cleaned_features)
+
         return VectorLayer(
             features=cleaned_features,
             name=layer.name,
