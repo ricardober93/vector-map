@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -295,6 +296,20 @@ class VectorMapDialog(_QDialog if HAS_QT else object):
         self.progress_bar.setRange(0, 100)
         main_layout.addWidget(self.progress_bar)
 
+        # Presets section
+        presets_group = QGroupBox("Presets")
+        presets_layout = QHBoxLayout()
+
+        self.save_preset_btn = QPushButton("💾 Save Preset")
+        self.load_preset_btn = QPushButton("📂 Load Preset")
+
+        presets_layout.addWidget(self.save_preset_btn)
+        presets_layout.addWidget(self.load_preset_btn)
+        presets_layout.addStretch()
+
+        presets_group.setLayout(presets_layout)
+        main_layout.addWidget(presets_group)
+
         # Buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
@@ -318,6 +333,8 @@ class VectorMapDialog(_QDialog if HAS_QT else object):
         self.cancel_btn.clicked.connect(self.reject)
         self.vectorize_btn.clicked.connect(self._on_vectorize)
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        self.save_preset_btn.clicked.connect(self._on_save_preset)
+        self.load_preset_btn.clicked.connect(self._on_load_preset)
 
     def _on_browse_raster(self) -> None:
         """Handle raster file browser button click."""
@@ -379,6 +396,90 @@ class VectorMapDialog(_QDialog if HAS_QT else object):
 
         # All good - the actual vectorization will be handled by the algorithm
         self.accept()
+
+    def _on_save_preset(self) -> None:
+        """Handle save preset button click."""
+        params = self.get_parameters()
+
+        if not HAS_QT:
+            QMessageBox.information(
+                self,
+                "Presets",
+                "Preset functionality requires Qt."
+            )
+            return
+
+        # Use QInputDialog for name input
+        from PyQt5.QtWidgets import QInputDialog
+        text, ok = QInputDialog.getText(
+            self,
+            "Save Preset",
+            "Enter preset name:",
+        )
+
+        if not ok or not text.strip():
+            return
+
+        preset_name = text.strip()
+
+        try:
+            filepath = self.save_preset(preset_name, params)
+            QMessageBox.information(
+                self,
+                "Preset Saved",
+                f"Preset '{preset_name}' saved successfully!"
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to save preset: {e}"
+            )
+
+    def _on_load_preset(self) -> None:
+        """Handle load preset button click."""
+        if not HAS_QT:
+            QMessageBox.information(
+                self,
+                "Presets",
+                "Preset functionality requires Qt."
+            )
+            return
+
+        presets = self.list_presets()
+
+        if not presets:
+            QMessageBox.information(
+                self,
+                "No Presets",
+                "No presets found. Save a preset first!"
+            )
+            return
+
+        # Show dialog to select preset
+        preset_names = [p.get("name", "Unnamed") for p in presets]
+        from PyQt5.QtWidgets import QInputDialog
+        selected, ok = QInputDialog.getItem(
+            self,
+            "Load Preset",
+            "Select a preset:",
+            preset_names,
+            0,
+            False
+        )
+
+        if not ok or not selected:
+            return
+
+        # Load and apply the preset
+        preset = self.load_preset(selected)
+        if preset:
+            self.apply_preset(preset)
+            QMessageBox.information(
+                self,
+                "Preset Loaded",
+                f"Preset '{selected}' loaded!"
+            )
 
     def _update_preview(self) -> None:
         """Update the raster preview information."""
@@ -498,3 +599,149 @@ class VectorMapDialog(_QDialog if HAS_QT else object):
             self.output_browse_btn.setEnabled(enabled)
             self.vectorize_btn.setEnabled(enabled)
             self.cancel_btn.setEnabled(enabled)
+
+    # =========================================================================
+    # Preset Management
+    # =========================================================================
+
+    @staticmethod
+    def _get_presets_dir() -> Path:
+        """Get the directory for storing presets."""
+        # Store presets in user's home directory under .qgis_vector_map
+        home = Path.home()
+        presets_dir = home / ".qgis_vector_map" / "presets"
+        presets_dir.mkdir(parents=True, exist_ok=True)
+        return presets_dir
+
+    @classmethod
+    def list_presets(cls) -> list[dict[str, Any]]:
+        """List all available presets."""
+        presets_dir = cls._get_presets_dir()
+        presets = []
+
+        for preset_file in presets_dir.glob("*.json"):
+            try:
+                with open(preset_file, "r", encoding="utf-8") as f:
+                    preset = json.load(f)
+                    preset["_filename"] = preset_file.name
+                    presets.append(preset)
+            except (json.JSONDecodeError, OSError):
+                continue
+
+        return sorted(presets, key=lambda p: p.get("name", ""))
+
+    @classmethod
+    def load_preset(cls, preset_name: str) -> dict[str, Any] | None:
+        """Load a preset by name."""
+        presets_dir = cls._get_presets_dir()
+
+        # Try exact match first
+        for preset_file in presets_dir.glob("*.json"):
+            try:
+                with open(preset_file, "r", encoding="utf-8") as f:
+                    preset = json.load(f)
+                    if preset.get("name") == preset_name:
+                        return preset
+            except (json.JSONDecodeError, OSError):
+                continue
+
+        return None
+
+    @classmethod
+    def save_preset(cls, name: str, parameters: dict[str, Any]) -> Path:
+        """Save a preset with the given name and parameters."""
+        presets_dir = cls._get_presets_dir()
+
+        # Create safe filename from name
+        safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in name)
+        safe_name = safe_name.strip()
+        if not safe_name:
+            safe_name = "preset"
+
+        # Add timestamp to ensure uniqueness
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{safe_name}_{timestamp}.json"
+        filepath = presets_dir / filename
+
+        preset_data = {
+            "name": name,
+            "created": datetime.now().isoformat(),
+            "profile": parameters.get("profile", "regional-high-precision"),
+            "engine": parameters.get("engine", "auto"),
+            "execution_mode": parameters.get("execution_mode", "auto"),
+            "output_format": parameters.get("output_format", "auto"),
+            "parameters": parameters.get("parameters", {}),
+        }
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(preset_data, f, indent=2)
+
+        return filepath
+
+    @classmethod
+    def delete_preset(cls, preset_name: str) -> bool:
+        """Delete a preset by name."""
+        presets_dir = cls._get_presets_dir()
+
+        for preset_file in presets_dir.glob("*.json"):
+            try:
+                with open(preset_file, "r", encoding="utf-8") as f:
+                    preset = json.load(f)
+                    if preset.get("name") == preset_name:
+                        preset_file.unlink()
+                        return True
+            except (json.JSONDecodeError, OSError):
+                continue
+
+        return False
+
+    def apply_preset(self, preset: dict[str, Any]) -> None:
+        """Apply preset values to the dialog controls."""
+        # Map preset values to combo boxes
+        profile_map = {
+            "regional-high-precision": 0,
+            "edge-high-precision": 1,
+            "linear-high-precision": 2,
+        }
+
+        exec_mode_map = {
+            "auto": 0,
+            "strict": 1,
+            "tiled": 2,
+        }
+
+        output_format_map = {
+            "auto": 0,
+            "GeoPackage (.gpkg)": 1,
+            "GeoJSON (.geojson)": 2,
+            "ESRI Shapefile (.shp)": 3,
+        }
+
+        engine_map = {
+            "auto": 0,
+            "classic": 1,
+            "opencv": 2,
+        }
+
+        # Apply profile
+        profile = preset.get("profile", "regional-high-precision")
+        if profile in profile_map:
+            self.profile_combo.setCurrentIndex(profile_map[profile])
+
+        # Apply engine
+        engine = preset.get("engine", "auto")
+        if engine in engine_map:
+            self.engine_combo.setCurrentIndex(engine_map[engine])
+
+        # Apply execution mode
+        exec_mode = preset.get("execution_mode", "auto")
+        if exec_mode in exec_mode_map:
+            self.exec_mode_combo.setCurrentIndex(exec_mode_map[exec_mode])
+
+        # Apply output format
+        output_format = preset.get("output_format", "auto")
+        if output_format in output_format_map:
+            self.output_format_combo.setCurrentIndex(output_format_map[output_format])
+
+        # Update layer name based on new profile
+        self.layer_name_edit.setText(self._generate_default_layer_name(profile))

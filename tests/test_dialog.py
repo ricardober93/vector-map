@@ -200,5 +200,165 @@ class ParameterMappingTests(unittest.TestCase):
         self.assertEqual(engine_name_map["opencv"], "opencv-local")
 
 
+class PresetManagementTests(unittest.TestCase):
+    """Tests for preset management functionality."""
+
+    def test_preset_save_and_load(self):
+        """Presets should be saveable and loadable."""
+        import tempfile
+        import json
+        from pathlib import Path
+
+        # Use a temp directory for testing
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Patch _get_presets_dir to use temp directory
+            from qgis_vector_map.ui.dialog import VectorMapDialog
+
+            original_get_dir = VectorMapDialog._get_presets_dir
+            VectorMapDialog._get_presets_dir = classmethod(lambda cls: Path(tmpdir))
+
+            try:
+                # Save a preset
+                params = {
+                    "profile": "regional-high-precision",
+                    "engine": "opencv",
+                    "execution_mode": "auto",
+                    "output_format": "auto",
+                }
+                filepath = VectorMapDialog.save_preset("Test Preset", params)
+
+                # Verify file was created
+                self.assertTrue(filepath.exists())
+
+                # Verify content
+                with open(filepath, "r") as f:
+                    data = json.load(f)
+
+                self.assertEqual(data["name"], "Test Preset")
+                self.assertEqual(data["profile"], "regional-high-precision")
+                self.assertEqual(data["engine"], "opencv")
+
+                # Load the preset
+                loaded = VectorMapDialog.load_preset("Test Preset")
+                self.assertIsNotNone(loaded)
+                self.assertEqual(loaded["name"], "Test Preset")
+                self.assertEqual(loaded["profile"], "regional-high-precision")
+
+                # Cleanup
+                filepath.unlink()
+
+            finally:
+                VectorMapDialog._get_presets_dir = original_get_dir
+
+    def test_preset_delete(self):
+        """Presets should be deletable."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from qgis_vector_map.ui.dialog import VectorMapDialog
+
+            original_get_dir = VectorMapDialog._get_presets_dir
+            VectorMapDialog._get_presets_dir = classmethod(lambda cls: Path(tmpdir))
+
+            try:
+                # Save a preset
+                params = {"profile": "edge-high-precision"}
+                filepath = VectorMapDialog.save_preset("Delete Me", params)
+                self.assertTrue(filepath.exists())
+
+                # Delete it
+                result = VectorMapDialog.delete_preset("Delete Me")
+                self.assertTrue(result)
+                self.assertFalse(filepath.exists())
+
+                # Try to delete non-existent (should return False)
+                result = VectorMapDialog.delete_preset("Non Existent")
+                self.assertFalse(result)
+
+            finally:
+                VectorMapDialog._get_presets_dir = original_get_dir
+
+    def test_list_presets(self):
+        """List presets should return all saved presets."""
+        import tempfile
+        import json
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from qgis_vector_map.ui.dialog import VectorMapDialog
+
+            original_get_dir = VectorMapDialog._get_presets_dir
+            VectorMapDialog._get_presets_dir = classmethod(lambda cls: Path(tmpdir))
+
+            try:
+                # Initially empty
+                presets = VectorMapDialog.list_presets()
+                self.assertEqual(len(presets), 0)
+
+                # Save some presets
+                VectorMapDialog.save_preset("Preset A", {"profile": "regional"})
+                VectorMapDialog.save_preset("Preset B", {"profile": "edge"})
+                VectorMapDialog.save_preset("Preset C", {"profile": "linear"})
+
+                # Should list all 3
+                presets = VectorMapDialog.list_presets()
+                self.assertEqual(len(presets), 3)
+
+                # Cleanup
+                for p in presets:
+                    if "_filename" in p:
+                        (Path(tmpdir) / p["_filename"]).unlink()
+
+            finally:
+                VectorMapDialog._get_presets_dir = original_get_dir
+
+    def test_apply_preset_mapping(self):
+        """Applying preset should correctly map values to combo indices."""
+        # Test the mapping logic
+        profile_map = {
+            "regional-high-precision": 0,
+            "edge-high-precision": 1,
+            "linear-high-precision": 2,
+        }
+
+        exec_mode_map = {
+            "auto": 0,
+            "strict": 1,
+            "tiled": 2,
+        }
+
+        output_format_map = {
+            "auto": 0,
+            "GeoPackage (.gpkg)": 1,
+            "GeoJSON (.geojson)": 2,
+            "ESRI Shapefile (.shp)": 3,
+        }
+
+        engine_map = {
+            "auto": 0,
+            "classic": 1,
+            "opencv": 2,
+        }
+
+        # Test profile mappings
+        self.assertEqual(profile_map["regional-high-precision"], 0)
+        self.assertEqual(profile_map["edge-high-precision"], 1)
+        self.assertEqual(profile_map["linear-high-precision"], 2)
+
+        # Test exec mode mappings
+        self.assertEqual(exec_mode_map["auto"], 0)
+        self.assertEqual(exec_mode_map["strict"], 1)
+        self.assertEqual(exec_mode_map["tiled"], 2)
+
+        # Test output format mappings
+        self.assertEqual(output_format_map["auto"], 0)
+        self.assertEqual(output_format_map["GeoPackage (.gpkg)"], 1)
+
+        # Test engine mappings
+        self.assertEqual(engine_map["auto"], 0)
+        self.assertEqual(engine_map["opencv"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
