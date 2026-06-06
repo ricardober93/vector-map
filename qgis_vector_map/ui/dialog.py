@@ -22,9 +22,21 @@ _QGroupBox: Any
 _QMessageBox: Any
 _QProgressBar: Any
 _QCheckBox: Any
+_QListWidget: Any
+_QTabWidget: Any
+_QMimeData: Any
+_QDragEnterEvent: Any
+_QDropEvent: Any
 
 # Try to import PyQt5/PyQt6 for Qt widgets
 try:
+    from PyQt5.QtCore import QMimeData as _QMimeData
+    from PyQt5.QtCore import QPoint as _QPoint
+    from PyQt5.QtCore import QRect as _QRect
+    from PyQt5.QtCore import QSize as _QSize
+    from PyQt5.QtCore import QUrl as _QUrl
+    from PyQt5.QtGui import QDragEnterEvent as _QDragEnterEvent
+    from PyQt5.QtGui import QDropEvent as _QDropEvent
     from PyQt5.QtWidgets import QDialog as _QDialog
     from PyQt5.QtWidgets import QLabel as _QLabel
     from PyQt5.QtWidgets import QLineEdit as _QLineEdit
@@ -39,10 +51,20 @@ try:
     from PyQt5.QtWidgets import QMessageBox as _QMessageBox
     from PyQt5.QtWidgets import QProgressBar as _QProgressBar
     from PyQt5.QtWidgets import QCheckBox as _QCheckBox
+    from PyQt5.QtWidgets import QListWidget as _QListWidget
+    from PyQt5.QtWidgets import QListWidgetItem as _QListWidgetItem
+    from PyQt5.QtWidgets import QTabWidget as _QTabWidget
 
     HAS_QT = True
 except ImportError:
     try:
+        from PyQt6.QtCore import QMimeData as _QMimeData
+        from PyQt6.QtCore import QPoint as _QPoint
+        from PyQt6.QtCore import QRect as _QRect
+        from PyQt6.QtCore import QSize as _QSize
+        from PyQt6.QtCore import QUrl as _QUrl
+        from PyQt6.QtGui import QDragEnterEvent as _QDragEnterEvent
+        from PyQt6.QtGui import QDropEvent as _QDropEvent
         from PyQt6.QtWidgets import QDialog as _QDialog
         from PyQt6.QtWidgets import QLabel as _QLabel
         from PyQt6.QtWidgets import QLineEdit as _QLineEdit
@@ -57,6 +79,9 @@ except ImportError:
         from PyQt6.QtWidgets import QMessageBox as _QMessageBox
         from PyQt6.QtWidgets import QProgressBar as _QProgressBar
         from PyQt6.QtWidgets import QCheckBox as _QCheckBox
+        from PyQt6.QtWidgets import QListWidget as _QListWidget
+        from PyQt6.QtWidgets import QListWidgetItem as _QListWidgetItem
+        from PyQt6.QtWidgets import QTabWidget as _QTabWidget
 
         HAS_QT = True
     except ImportError:
@@ -140,6 +165,54 @@ if not HAS_QT:
         def isChecked(self): return False
         def setChecked(self, checked): pass
 
+    class _QListWidget:
+        def __init__(self, *args, **kwargs): pass
+        def addItem(self, item): pass
+        def addItems(self, items): pass
+        def clear(self): pass
+        def count(self): return 0
+        def item(self, row): return None
+        def currentItem(self): return None
+        def currentRow(self): return -1
+        def setCurrentRow(self, row): pass
+        def currentText(self): return ""
+
+    class _QListWidgetItem:
+        def __init__(self, *args, **kwargs): pass
+        def setText(self, text): pass
+        def text(self): return ""
+        def setData(self, role, value): pass
+        def data(self, role): return None
+
+    class _QTabWidget:
+        def __init__(self, *args, **kwargs): pass
+        def addTab(self, widget, label): pass
+        def currentIndex(self): return 0
+        def setCurrentIndex(self, index): pass
+        def widget(self, index): return None
+
+    class _QMimeData:
+        @staticmethod
+        def hasUrls(): return False
+        def urls(self): return []
+
+    class _QUrl:
+        @staticmethod
+        def fromLocalFile(path): return None
+        def toLocalFile(self): return ""
+
+    class _QDragEnterEvent:
+        def __init__(self, *args, **kwargs): pass
+        def acceptProposedAction(self): pass
+        def ignore(self): pass
+        def mimeData(self): return None
+
+    class _QDropEvent:
+        def __init__(self, *args, **kwargs): pass
+        def acceptProposedAction(self): pass
+        def ignore(self): pass
+        def mimeData(self): return None
+
 
 QDialog = cast(type, _QDialog)
 QLabel = cast(type, _QLabel)
@@ -155,6 +228,11 @@ QGroupBox = cast(type, _QGroupBox)
 QMessageBox = cast(type, _QMessageBox)
 QProgressBar = cast(type, _QProgressBar)
 QCheckBox = cast(type, _QCheckBox)
+QListWidget = cast(type, _QListWidget)
+QListWidgetItem = cast(type, _QListWidgetItem)
+QTabWidget = cast(type, _QTabWidget)
+QMimeData = cast(type, _QMimeData)
+QUrl = cast(type, _QUrl)
 
 
 class VectorMapDialog(_QDialog if HAS_QT else object):
@@ -162,7 +240,23 @@ class VectorMapDialog(_QDialog if HAS_QT else object):
 
     Provides a user-friendly interface for vectorizing raster images
     with visual parameter selection and real-time feedback.
+
+    Drag & Drop
+    -----------
+    The dialog accepts raster files dropped from the system file manager.
+    - Single file: populates the raster path and updates the preview.
+    - Multiple files: populates with the first file AND triggers the
+      :attr:`on_files_dropped` callback (if set) so the host can switch
+      to batch mode. The list of paths is passed to the callback.
+
+    To react to multi-file drops, set a callback before showing:
+    >>> dialog = VectorMapDialog()
+    >>> dialog.on_files_dropped = lambda paths: run_batch(paths)
     """
+
+    # Callback: invoked when multiple files are dropped. Receives a list of paths.
+    # Public so tests can patch it directly.
+    on_files_dropped = None
 
     # Profile options
     PROFILE_OPTIONS = [
@@ -193,6 +287,51 @@ class VectorMapDialog(_QDialog if HAS_QT else object):
         "opencv",
     ]
 
+    # Supported raster file extensions for drag & drop
+    RASTER_EXTENSIONS = frozenset({
+        ".tif", ".tiff", ".TIF", ".TIFF",
+        ".png", ".PNG",
+        ".jpg", ".jpeg", ".JPG", ".JPEG",
+        ".bmp", ".BMP",
+        ".gif", ".GIF",
+        ".webp", ".WEBP",
+    })
+
+    @classmethod
+    def is_raster_path(cls, path: str) -> bool:
+        """Return True if the given path has a supported raster extension.
+
+        Accepts paths with or without query strings, in case the user
+        drags a URL-like object from some file managers. Extension
+        comparison is case-insensitive (so .TIF, .Tif, .tif all match).
+        """
+        if not path:
+            return False
+        # Strip any query/fragment (e.g., from drag-dropped URLs)
+        clean = path.split("?", 1)[0].split("#", 1)[0]
+        ext = Path(clean).suffix
+        if not ext:
+            return False
+        return ext.lower() in {e.lower() for e in cls.RASTER_EXTENSIONS}
+
+    @classmethod
+    def filter_raster_urls(cls, urls: list[Any]) -> list[str]:
+        """Filter a list of QUrl-like objects and return only raster paths.
+
+        Non-raster URLs are silently dropped. If no URLs have a recognized
+        extension, returns an empty list.
+        """
+        result: list[str] = []
+        for url in urls:
+            # Support both QUrl and str
+            if hasattr(url, "toLocalFile"):
+                path = url.toLocalFile()
+            else:
+                path = str(url)
+            if cls.is_raster_path(path):
+                result.append(path)
+        return result
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -210,6 +349,9 @@ class VectorMapDialog(_QDialog if HAS_QT else object):
         """Setup the dialog UI components."""
         main_layout = QVBoxLayout(self)
 
+        # Enable drag & drop of raster files
+        self.setAcceptDrops(True)
+
         # Input section
         input_group = QGroupBox("Input")
         input_layout = QGridLayout()
@@ -222,6 +364,11 @@ class VectorMapDialog(_QDialog if HAS_QT else object):
         input_layout.addWidget(self.raster_label, 0, 0)
         input_layout.addWidget(self.raster_path_edit, 0, 1)
         input_layout.addWidget(self.raster_browse_btn, 0, 2)
+
+        # Apply tooltips
+        self._apply_tooltip(self.raster_path_edit, "tip_input_raster")
+        self._apply_tooltip(self.raster_browse_btn, "tip_browse")
+        self._apply_tooltip(self.raster_label, "tip_input_raster")
 
         input_group.setLayout(input_layout)
         main_layout.addWidget(input_group)
@@ -251,6 +398,14 @@ class VectorMapDialog(_QDialog if HAS_QT else object):
         processing_layout.addWidget(self.engine_combo, 1, 1, 1, 2)
         processing_layout.addWidget(self.exec_mode_label, 2, 0)
         processing_layout.addWidget(self.exec_mode_combo, 2, 1, 1, 2)
+
+        # Apply tooltips
+        self._apply_tooltip(self.profile_combo, "tip_profile")
+        self._apply_tooltip(self.profile_label, "tip_profile")
+        self._apply_tooltip(self.engine_combo, "tip_engine")
+        self._apply_tooltip(self.engine_label, "tip_engine")
+        self._apply_tooltip(self.exec_mode_combo, "tip_execution_mode")
+        self._apply_tooltip(self.exec_mode_label, "tip_execution_mode")
 
         processing_group.setLayout(processing_layout)
         main_layout.addWidget(processing_group)
@@ -282,6 +437,15 @@ class VectorMapDialog(_QDialog if HAS_QT else object):
         output_layout.addWidget(self.output_file_edit, 2, 1)
         output_layout.addWidget(self.output_browse_btn, 2, 2)
 
+        # Apply tooltips
+        self._apply_tooltip(self.output_format_combo, "tip_output_format")
+        self._apply_tooltip(self.output_format_label, "tip_output_format")
+        self._apply_tooltip(self.layer_name_edit, "tip_layer_name")
+        self._apply_tooltip(self.layer_name_label, "tip_layer_name")
+        self._apply_tooltip(self.output_file_edit, "tip_output_file")
+        self._apply_tooltip(self.output_file_label, "tip_output_file")
+        self._apply_tooltip(self.output_browse_btn, "tip_browse")
+
         output_group.setLayout(output_layout)
         main_layout.addWidget(output_group)
 
@@ -307,6 +471,10 @@ class VectorMapDialog(_QDialog if HAS_QT else object):
         presets_layout.addWidget(self.load_preset_btn)
         presets_layout.addStretch()
 
+        # Apply tooltips
+        self._apply_tooltip(self.save_preset_btn, "tip_save_preset")
+        self._apply_tooltip(self.load_preset_btn, "tip_load_preset")
+
         presets_group.setLayout(presets_layout)
         main_layout.addWidget(presets_group)
 
@@ -321,10 +489,33 @@ class VectorMapDialog(_QDialog if HAS_QT else object):
         button_layout.addWidget(self.cancel_btn)
         button_layout.addWidget(self.vectorize_btn)
 
+        # Apply tooltips
+        self._apply_tooltip(self.cancel_btn, "tip_cancel")
+        self._apply_tooltip(self.vectorize_btn, "tip_vectorize")
+
         main_layout.addLayout(button_layout)
 
         # Store references to main layout for later
         self._main_layout = main_layout
+
+    def _apply_tooltip(self, widget: Any, message_id: str) -> None:
+        """Apply a translated tooltip to a widget if Qt is available.
+
+        Falls back silently when Qt is unavailable (used during tests).
+        """
+        if not HAS_QT:
+            return
+        try:
+            from .i18n_helper import tr
+        except ImportError:
+            from .i18n_helper import tr
+        text = tr(message_id)
+        if not text or text == message_id:
+            return
+        try:
+            widget.setToolTip(text)
+        except Exception:  # pragma: no cover - defensive
+            pass
 
     def _connect_signals(self) -> None:
         """Connect UI signals to slots."""
@@ -335,6 +526,77 @@ class VectorMapDialog(_QDialog if HAS_QT else object):
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         self.save_preset_btn.clicked.connect(self._on_save_preset)
         self.load_preset_btn.clicked.connect(self._on_load_preset)
+
+    # =========================================================================
+    # Drag & Drop handlers
+    # =========================================================================
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt convention)
+        """Accept the drag if it contains at least one raster file."""
+        if not HAS_QT:
+            return
+        mime = event.mimeData()
+        if mime is None or not mime.hasUrls():
+            event.ignore()
+            return
+        raster_paths = self.filter_raster_urls(mime.urls())
+        if raster_paths:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 (Qt convention)
+        """Accept the drag if it contains at least one raster file."""
+        if not HAS_QT:
+            return
+        mime = event.mimeData()
+        if mime is None or not mime.hasUrls():
+            event.ignore()
+            return
+        raster_paths = self.filter_raster_urls(mime.urls())
+        if raster_paths:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:  # noqa: N802 (Qt convention)
+        """Handle dropped files: populate raster field or enable batch mode.
+
+        Single file: fills the raster path and updates the preview.
+        Multiple files: populates the raster field with the first one AND
+        emits the ``filesDropped`` signal so the host application (or a
+        test) can switch to batch mode.
+        """
+        if not HAS_QT:
+            return
+        mime = event.mimeData()
+        if mime is None or not mime.hasUrls():
+            event.ignore()
+            return
+        raster_paths = self.filter_raster_urls(mime.urls())
+        if not raster_paths:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+
+        # Single file: classic single-file flow
+        if len(raster_paths) == 1:
+            self.raster_path_edit.setText(raster_paths[0])
+            self._update_preview()
+            return
+
+        # Multiple files: use first as the visible "active" raster and
+        # invoke the on_files_dropped callback (if registered) so the host
+        # can run a batch.
+        self.raster_path_edit.setText(raster_paths[0])
+        self._update_preview()
+        callback = getattr(self, "on_files_dropped", None)
+        if callable(callback):
+            try:
+                callback(raster_paths)
+            except Exception:  # pragma: no cover - defensive
+                # Don't let a buggy callback break the drop
+                pass
 
     def _on_browse_raster(self) -> None:
         """Handle raster file browser button click."""

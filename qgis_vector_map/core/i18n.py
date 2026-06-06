@@ -149,6 +149,101 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "en": "(no recent files)",
         "es": "(sin archivos recientes)",
     },
+    # Tooltips (longer, descriptive)
+    "tip_input_raster": {
+        "en": "Path to the raster file to vectorize. "
+              "Supported formats: GeoTIFF, PNG, JPEG, BMP, GIF, WebP. "
+              "You can also drag & drop files onto this dialog.",
+        "es": "Ruta al archivo ráster a vectorizar. "
+              "Formatos soportados: GeoTIFF, PNG, JPEG, BMP, GIF, WebP. "
+              "También puedes arrastrar archivos sobre este diálogo.",
+    },
+    "tip_browse": {
+        "en": "Open a file picker to select a raster file.",
+        "es": "Abrir un selector de archivos para elegir un ráster.",
+    },
+    "tip_profile": {
+        "en": "Profile to use:\n"
+              "• Regional: best for color/region segmentation\n"
+              "• Edge: best for outlines and contours\n"
+              "• Linear: best for networks (roads, rivers, etc.)",
+        "es": "Perfil a usar:\n"
+              "• Regional: mejor para segmentación por colores/regiones\n"
+              "• Edge: mejor para contornos y límites\n"
+              "• Linear: mejor para redes (vías, ríos, etc.)",
+    },
+    "tip_engine": {
+        "en": "Vectorization engine:\n"
+              "• Auto: picks the best available (recommended)\n"
+              "• Classic: pure Python, slower but always available\n"
+              "• OpenCV: uses C++ under the hood, much faster",
+        "es": "Motor de vectorización:\n"
+              "• Auto: elige el mejor disponible (recomendado)\n"
+              "• Classic: Python puro, más lento pero siempre disponible\n"
+              "• OpenCV: usa C++ internamente, mucho más rápido",
+    },
+    "tip_execution_mode": {
+        "en": "How to process the raster:\n"
+              "• Auto: detects based on size (strict for small, tiled for big)\n"
+              "• Strict: loads everything in memory (fast, but limited by RAM)\n"
+              "• Tiled: processes in chunks (handles very large rasters)",
+        "es": "Cómo procesar el ráster:\n"
+              "• Auto: detecta según tamaño (estricto para chicos, teselas para grandes)\n"
+              "• Estricto: carga todo en memoria (rápido, pero limitado por RAM)\n"
+              "• Por teselas: procesa por chunks (maneja ráster muy grandes)",
+    },
+    "tip_output_format": {
+        "en": "File format for the output layer:\n"
+              "• Auto: detected from output file extension\n"
+              "• GeoPackage: modern, single-file database (recommended)\n"
+              "• GeoJSON: text-based, easy to share\n"
+              "• Shapefile: classic GIS format (10-char field name limit)",
+        "es": "Formato del archivo de salida:\n"
+              "• Auto: detectado desde la extensión del archivo de salida\n"
+              "• GeoPackage: moderno, base de datos en un archivo (recomendado)\n"
+              "• GeoJSON: basado en texto, fácil de compartir\n"
+              "• Shapefile: formato GIS clásico (límite de 10 chars en nombres)",
+    },
+    "tip_output_crs": {
+        "en": "Coordinate reference system for the output layer.\n"
+              "'Same as input' preserves the source raster's CRS.\n"
+              "Choose EPSG:4326 (WGS84) for web maps.\n"
+              "Choose a UTM zone for local precision.",
+        "es": "Sistema de coordenadas del archivo de salida.\n"
+              "'Igual al de entrada' preserva el CRS del ráster original.\n"
+              "Elige EPSG:4326 (WGS84) para mapas web.\n"
+              "Elige una zona UTM para precisión local.",
+    },
+    "tip_layer_name": {
+        "en": "Name for the output layer in QGIS.\n"
+              "Default uses a timestamp so each run is unique.",
+        "es": "Nombre para la capa de salida en QGIS.\n"
+              "Por defecto usa timestamp para que cada corrida sea única.",
+    },
+    "tip_output_file": {
+        "en": "Where to write the output file.\n"
+              "If empty, an output filename is auto-generated next to the input.",
+        "es": "Dónde escribir el archivo de salida.\n"
+              "Si está vacío, se genera automáticamente junto al archivo de entrada.",
+    },
+    "tip_save_preset": {
+        "en": "Save the current dialog settings as a reusable preset.\n"
+              "Presets are stored in ~/.qgis_vector_map/presets/.",
+        "es": "Guardar la configuración actual como un preajuste reutilizable.\n"
+              "Los preajustes se guardan en ~/.qgis_vector_map/presets/.",
+    },
+    "tip_load_preset": {
+        "en": "Load a previously saved preset configuration.",
+        "es": "Cargar una configuración de preajuste guardada anteriormente.",
+    },
+    "tip_vectorize": {
+        "en": "Run vectorization with the current settings.",
+        "es": "Ejecutar la vectorización con la configuración actual.",
+    },
+    "tip_cancel": {
+        "en": "Cancel the dialog without running anything.",
+        "es": "Cancelar el diálogo sin ejecutar nada.",
+    },
 }
 
 # Language registry
