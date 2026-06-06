@@ -1,7 +1,7 @@
 [general]
 name=Vector Map
 description=Local raster-to-vector processing plugin for QGIS Processing
-version=1.0.0
+version=1.1.0
 qgisMinimumVersion=3.44
 author=Ricardo Bermudez
 email=
@@ -14,4 +14,4 @@ hasProcessingProvider=yes
 homepage=https://github.com/ricardober93/vector-map
 repository=https://github.com/ricardober93/vector-map
 tracker=https://github.com/ricardober93/vector-map/issues
-changelog=v1.0.0 milestone: Drag & drop support for raster files in dialog. Multi-file drop triggers batch mode. Translated tooltips (EN/ES) for every dialog widget with helpful descriptions. Processing history manager (persists to ~/.qgis_vector_map/history.json, 50-entry cap, success/failure tracking, stats, prune-failures helper).
+changelog=v1.1.0: Result cache (avoid reprocessing identical file+config combos, SHA-256 keyed, auto-invalidates on file/algorithm changes). Plugin update checker (queries GitHub releases, 24h throttle, version comparison, network error handling).

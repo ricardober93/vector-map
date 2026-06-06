@@ -13,7 +13,7 @@ __all__ = [
     "run_vectorization_async",
     "VectorMapPlugin",
 ]
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 def classFactory(iface):
