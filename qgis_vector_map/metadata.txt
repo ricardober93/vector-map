@@ -1,7 +1,7 @@
 [general]
 name=Vector Map
 description=Local raster-to-vector processing plugin for QGIS Processing
-version=0.8.0
+version=0.9.0
 qgisMinimumVersion=3.44
 author=Ricardo Bermudez
 email=
@@ -14,4 +14,4 @@ hasProcessingProvider=yes
 homepage=https://github.com/ricardober93/vector-map
 repository=https://github.com/ricardober93/vector-map
 tracker=https://github.com/ricardober93/vector-map/issues
-changelog=CancelToken for cancellable operations (tile-by-tile check). CRS output selector (Same as input, EPSG:4326/3857/UTM18N/UTM19N, custom). ETAMeter for time-elapsed and ETA in pipeline progress. Recent files manager (max 5, persisted to ~/.qgis_vector_map/recent.json).
+changelog=BatchProcessor for sequential multi-file vectorization. i18n system (English/Spanish) with t() helper and register_translation. GPU capability detection (cuPy, cv2-CUDA) with cached capability and graceful fallback to CPU.
