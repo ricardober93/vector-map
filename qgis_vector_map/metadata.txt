@@ -1,7 +1,7 @@
 [general]
 name=Vector Map
 description=Local raster-to-vector processing plugin for QGIS Processing
-version=0.6.0
+version=0.8.0
 qgisMinimumVersion=3.44
 author=Ricardo Bermudez
 email=
@@ -14,4 +14,4 @@ hasProcessingProvider=yes
 homepage=https://github.com/ricardober93/vector-map
 repository=https://github.com/ricardober93/vector-map
 tracker=https://github.com/ricardober93/vector-map/issues
-changelog=Polygon hierarchy fix (exterior/holes). Adaptive simplification (simplify_tolerance=0.5 default). Self-intersection repair via shapely.make_valid. Dissolve adjacent polygons by class_id. Edge-to-polygon mode. Numpy/cv2-accelerated polygonize_label_map. Collinear vertex removal. Stitch polygon features API. New QGIS algorithm parameters: EDGE_TO_POLYGON, DISSOLVE_ADJACENT, SIMPLIFY_TOLERANCE.
+changelog=CancelToken for cancellable operations (tile-by-tile check). CRS output selector (Same as input, EPSG:4326/3857/UTM18N/UTM19N, custom). ETAMeter for time-elapsed and ETA in pipeline progress. Recent files manager (max 5, persisted to ~/.qgis_vector_map/recent.json).

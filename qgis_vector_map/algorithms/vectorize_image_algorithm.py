@@ -297,6 +297,8 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
     SIMPLIFY_TOLERANCE = "SIMPLIFY_TOLERANCE"
     OUTPUT = "OUTPUT"
     OUTPUT_FORMAT = "OUTPUT_FORMAT"
+    OUTPUT_CRS = "OUTPUT_CRS"
+    OUTPUT_CRS_CUSTOM = "OUTPUT_CRS_CUSTOM"
     PARAMETERS = "PARAMETERS"
     LAYER_NAME = "LAYER_NAME"
     ENGINE = "ENGINE"
@@ -449,6 +451,31 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
                 self._tr("Output vector layer"),
             )
         )
+        # CRS selector: choose from common EPSG codes or provide a custom one
+        self.addParameter(
+            QgsProcessingParameterEnum(
+                self.OUTPUT_CRS,
+                self._tr("Output CRS"),
+                options=[
+                    self._tr("Same as input raster"),
+                    "EPSG:4326 (WGS 84)",
+                    "EPSG:3857 (Web Mercator)",
+                    "EPSG:32618 (UTM 18N)",
+                    "EPSG:32619 (UTM 19N)",
+                    self._tr("Custom (specify below)"),
+                ],
+                defaultValue=0,  # "Same as input raster"
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterString(
+                self.OUTPUT_CRS_CUSTOM,
+                self._tr("Custom CRS (e.g. EPSG:3116)"),
+                defaultValue="",
+                optional=True,
+                multiLine=False,
+            )
+        )
 
     def _parse_parameters(self, raw_parameters: str | None) -> dict[str, Any]:
         if not raw_parameters:
@@ -467,6 +494,35 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
         if mode_index < 0 or mode_index >= len(execution_mode_options):
             raise _QgsProcessingException("Invalid execution mode selection.")
         return execution_mode_options[mode_index]
+
+    def _resolve_output_crs(
+        self,
+        parameters: dict[str, Any],
+        context: Any,
+        *,
+        input_crs: Any = None,
+    ) -> Any:
+        """Resolve the output CRS based on user selection.
+
+        Index mapping (matches the enum options in initAlgorithm):
+            0 -> "Same as input raster" (use input_crs)
+            1 -> EPSG:4326
+            2 -> EPSG:3857
+            3 -> EPSG:32618
+            4 -> EPSG:32619
+            5 -> Custom (read from OUTPUT_CRS_CUSTOM)
+        """
+        try:
+            crs_index = int(self.parameterAsEnum(parameters, self.OUTPUT_CRS, context))
+        except Exception:
+            crs_index = 0
+
+        try:
+            custom_value = self.parameterAsString(parameters, self.OUTPUT_CRS_CUSTOM, context)
+        except Exception:
+            custom_value = ""
+
+        return _resolve_crs_from_index(crs_index, custom_value, input_crs)
 
     def _validate_execution_mode_for_profile(self, execution_mode: str, profile_id: str) -> None:
         """Validate execution mode is supported for the given profile."""
@@ -632,6 +688,15 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
             temp_extension = ".gpkg" if inferred_format == "gpkg" else ".geojson"
             output_path = Path(tempfile.gettempdir()) / f"vector_map_{profile_id}{temp_extension}"
 
+        # Resolve output CRS based on user selection
+        output_crs = self._resolve_output_crs(
+            parameters, context, input_crs=fallback_crs
+        )
+        if output_crs is not None:
+            feedback.pushInfo(
+                f"Output layer CRS: {output_crs.authid() if hasattr(output_crs, 'authid') else output_crs}"
+            )
+
         request = VectorizationRequest(
             source=input_path,
             profile_id=profile_id,
@@ -639,7 +704,10 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
             output_format=inferred_format,
             layer_name=layer_name,
             parameters=profile_parameters,
-            metadata={"processing_provider": "vector_map"},
+            metadata={
+                "processing_provider": "vector_map",
+                "output_crs": output_crs.authid() if output_crs and hasattr(output_crs, "authid") else None,
+            },
             execution_mode=execution_mode,
         )
 
@@ -698,3 +766,98 @@ class VectorizeImageAlgorithm(QgsProcessingAlgorithm):
                 result.metadata.get("requested_parameters", {}), sort_keys=True
             ),
         }
+
+
+class _LightweightCRS:
+    """Fallback CRS wrapper used when QGIS is not available.
+
+    Provides a small subset of the QGIS interface (authid, isValid, description)
+    so the rest of the code can be tested without importing qgis.core.
+    """
+
+    def __init__(self, authid: str) -> None:
+        self._authid = authid
+        self._is_valid = authid.upper().startswith("EPSG:")
+
+    def authid(self) -> str:
+        return self._authid
+
+    def isValid(self) -> bool:
+        return self._is_valid
+
+    def description(self) -> str:
+        return f"Lightweight CRS ({self._authid})"
+
+    def __repr__(self) -> str:
+        return f"_LightweightCRS({self._authid!r})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _LightweightCRS):
+            return NotImplemented
+        return self._authid == other._authid
+
+    def __hash__(self) -> int:
+        return hash(self._authid)
+
+
+# CRS option index -> action
+_CRS_OPTION_INPUT = 0
+_CRS_OPTION_EPSG_4326 = 1
+_CRS_OPTION_EPSG_3857 = 2
+_CRS_OPTION_EPSG_32618 = 3
+_CRS_OPTION_EPSG_32619 = 4
+_CRS_OPTION_CUSTOM = 5
+
+_CRS_PRESETS = {
+    _CRS_OPTION_EPSG_4326: "EPSG:4326",
+    _CRS_OPTION_EPSG_3857: "EPSG:3857",
+    _CRS_OPTION_EPSG_32618: "EPSG:32618",
+    _CRS_OPTION_EPSG_32619: "EPSG:32619",
+}
+
+
+def _resolve_crs_from_index(
+    crs_index: int,
+    custom_value: str,
+    input_crs: Any,
+) -> Any:
+    """Pure-logic CRS resolution (no QGIS dependency).
+
+    Separated from the algorithm wrapper so it can be unit-tested without
+    instantiating the QGIS processing algorithm.
+
+    Parameters
+    ----------
+    crs_index:
+        The user-selected index from the OUTPUT_CRS enum.
+    custom_value:
+        The value of OUTPUT_CRS_CUSTOM (only used when index == CUSTOM).
+    input_crs:
+        The input raster CRS (returned when index == INPUT).
+    """
+    if crs_index < 0 or crs_index > _CRS_OPTION_CUSTOM:
+        crs_index = _CRS_OPTION_INPUT
+
+    if crs_index == _CRS_OPTION_INPUT:
+        return input_crs
+
+    if crs_index == _CRS_OPTION_CUSTOM:
+        custom_value = (custom_value or "").strip()
+        if not custom_value:
+            return input_crs
+        return _build_crs(custom_value)
+
+    return _build_crs(_CRS_PRESETS[crs_index])
+
+
+def _build_crs(authid: str) -> Any:
+    """Build a CRS object. Uses QGIS if available, else _LightweightCRS."""
+    if HAS_QGIS:
+        try:
+            from qgis.core import QgsCoordinateReferenceSystem
+            crs_obj = QgsCoordinateReferenceSystem(authid)
+            if crs_obj.isValid():
+                return crs_obj
+        except Exception:
+            pass
+    return _LightweightCRS(authid)

@@ -10,6 +10,7 @@ from typing import Any
 from ..engines.base import VectorizationEngine, build_default_registry
 from ..processing_profiles import ResolvedProfile, resolve_profile
 from .errors import ConfigurationError, DependencyError, PipelineError, StageExecutionError
+from .eta import ETAMeter
 from .models import (
     CancelCallback,
     PipelineContext,
@@ -40,6 +41,21 @@ class PipelineOrchestrator:
     def _check_cancelled(self, cancel_callback: CancelCallback | None, stage: StageName) -> None:
         if cancel_callback is not None and cancel_callback():
             raise PipelineError(f"Vectorization cancelled before stage '{stage.value}'.")
+
+    def _raise_cancelled(self, cancel_callback: CancelCallback | None, stage: StageName, *, after: str = "") -> None:
+        """Same as _check_cancelled but with optional context.
+
+        Parameters
+        ----------
+        after:
+            Human-readable context (e.g. "tile 5/16") for the error message.
+        """
+        if cancel_callback is not None and cancel_callback():
+            msg = f"Vectorization cancelled at stage '{stage.value}'"
+            if after:
+                msg += f" after {after}"
+            msg += "."
+            raise PipelineError(msg)
 
     def _make_stage_report(self, stage: StageName, context: PipelineContext) -> StageReport:
         report = StageReport(stage=stage)
@@ -505,7 +521,11 @@ class PipelineOrchestrator:
             tile_stats: list[dict[str, Any]] = []
             total_tiles = max(1, len(tile_plan))
             for tile_index, (x_off, y_off, x_size, y_size) in enumerate(tile_plan):
-                self._check_cancelled(cancel_callback, StageName.VECTORIZE)
+                self._raise_cancelled(
+                    cancel_callback,
+                    StageName.VECTORIZE,
+                    after=f"tile {tile_index}/{total_tiles}",
+                )
                 tile_raster = self._load_raster_tile(
                     dataset=dataset,
                     source_name=source_path.name,
@@ -568,11 +588,20 @@ class PipelineOrchestrator:
                         "feature_count": tile_layer.feature_count(),
                     }
                 )
+                # Track ETA across tiles for this pipeline run
+                if not hasattr(self, "_eta_meter"):
+                    self._eta_meter = ETAMeter()
+                    self._eta_meter.start()
+                progress_ratio = float(tile_index + 1) / float(total_tiles)
+                self._eta_meter.update(progress_ratio)
                 if progress_callback is not None:
+                    eta_msg = self._eta_meter.progress_message(
+                        prefix=f"Tile {tile_index + 1}/{total_tiles}",
+                    )
                     progress_callback(
                         StageName.VECTORIZE,
-                        float(tile_index + 1) / float(total_tiles),
-                        f"Processed tile {tile_index + 1}/{total_tiles}",
+                        progress_ratio,
+                        eta_msg,
                     )
 
             merged_layer = VectorLayer(
